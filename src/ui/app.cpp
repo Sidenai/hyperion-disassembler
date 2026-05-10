@@ -63,12 +63,12 @@ App::App() : pool_(std::thread::hardware_concurrency()) {
 App::~App() = default;
 
 int App::run() {
-    if (!renderer_.init(1600, 900, "Hyperion"))
+    if (!renderer_.init(1600, 900, "Hyperion v" HYPERION_VERSION))
         return 1;
 
     renderer_.set_drop_callback([this](const char* p) { open_file(p); });
     apply_theme();
-    out_.log("Hyperion v0.1.0 ready");
+    out_.log("Hyperion v" HYPERION_VERSION " ready");
     out_.log("Drop a PE file or use File > Open (Ctrl+O)");
 
     while (!renderer_.should_close()) {
