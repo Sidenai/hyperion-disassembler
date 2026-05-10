@@ -1,0 +1,15 @@
+{
+  "name": "hyperion",
+  "version": "0.1.0",
+  "dependencies": [
+    {
+      "name": "imgui",
+      "features": ["docking-experimental", "glfw-binding", "opengl3-binding"]
+    },
+    "glfw3",
+    "zydis",
+    "spdlog",
+    "fmt",
+    "zlib"
+  ]
+}
