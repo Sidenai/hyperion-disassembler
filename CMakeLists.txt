@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Hyperion VERSION 0.1.0 LANGUAGES CXX)
+project(Hyperion VERSION 0.1.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -44,6 +44,13 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 if(WIN32)
     target_link_libraries(${PROJECT_NAME} PRIVATE comdlg32)
 endif()
+
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    HYPERION_VERSION="${PROJECT_VERSION}"
+    HYPERION_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}
+    HYPERION_VERSION_MINOR=${PROJECT_VERSION_MINOR}
+    HYPERION_VERSION_PATCH=${PROJECT_VERSION_PATCH}
+)
 
 target_precompile_headers(${PROJECT_NAME} PRIVATE
     <cstdint>
