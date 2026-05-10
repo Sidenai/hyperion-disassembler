@@ -1,0 +1,932 @@
+﻿#include "app.h"
+#include "ui/theme.h"
+#include <imgui.h>
+#include <imgui_internal.h>
+#include <spdlog/spdlog.h>
+#include <fmt/format.h>
+#include <thread>
+#include <fstream>
+
+#ifdef _WIN32
+#include <windows.h>
+#include <commdlg.h>
+#endif
+
+namespace hype {
+
+namespace {
+std::string open_dialog() {
+#ifdef _WIN32
+    char path[MAX_PATH] = {};
+    OPENFILENAMEA ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.lpstrFilter = "PE Files\0*.exe;*.dll;*.sys\0All\0*.*\0";
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+    if (GetOpenFileNameA(&ofn)) return path;
+#endif
+    return {};
+}
+
+std::string save_dialog() {
+#ifdef _WIN32
+    char path[MAX_PATH] = {};
+    OPENFILENAMEA ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.lpstrFilter = "PE Files\0*.exe;*.dll;*.sys\0All\0*.*\0";
+    ofn.lpstrFile = path;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+    if (GetSaveFileNameA(&ofn)) return path;
+#endif
+    return {};
+}
+}
+
+App::App() : pool_(std::thread::hardware_concurrency()) {
+    auto nav = [this](va_t a) { navigate_to(a); };
+    dv_.set_nav(nav);
+    fp_.set_nav([this](va_t a) { navigate_to(a); sync_panels(a); });
+    xp_.set_nav(nav);
+    sp_.set_nav(nav);
+    ip_.set_nav(nav);
+    gv_.set_nav(nav);
+    pv_.set_nav([this](va_t a) { navigate_to(a); });
+    srch_.set_nav(nav);
+    ev_.set_nav(nav);
+    cgv_.set_nav(nav);
+    diffv_.set_nav(nav);
+}
+
+App::~App() = default;
+
+int App::run() {
+    if (!renderer_.init(1600, 900, "Hyperion"))
+        return 1;
+
+    renderer_.set_drop_callback([this](const char* p) { open_file(p); });
+    apply_theme();
+    out_.log("Hyperion v0.1.0 ready");
+    out_.log("Drop a PE file or use File > Open (Ctrl+O)");
+
+    while (!renderer_.should_close()) {
+        renderer_.begin_frame();
+
+        // pick up analysis completion on main thread (thread-safe handoff)
+        if (analysis_done_.exchange(false)) {
+            busy_ = false;
+            auto& db = analyzer_->db();
+            dv_.set_data(&db, img_.get());
+            hv_.set_data(img_.get());
+            hv_.goto_addr(img_->entry);
+            pv_.set_data(&db);
+            fp_.set_data(&db);
+            xp_.set_data(&db);
+            xp_.set_img(img_.get());
+            sp_.set_data(&db);
+            ip_.set_data(img_.get());
+            gv_.set_data(&db);
+            srch_.set_data(&db, img_.get());
+            ev_.set_data(img_.get());
+            cgv_.set_data(&db);
+            tp_.set_data(&db);
+            navigate_to(img_->entry);
+            sync_panels(img_->entry);
+            out_.log(fmt::format("Done: {} insns, {} funcs, {} xrefs, {} strings",
+                db.insns.size(), db.funcs.size(), db.xrefs.size(), db.strings.size()));
+        }
+
+        if (diff_done_.exchange(false)) {
+            diffv_.set_results(diff_results_);
+            out_.log(fmt::format("Diff complete: {} results", diff_results_.size()));
+        }
+
+        render_dockspace();
+        handle_keys();
+        render_menubar();
+
+        dv_.render();
+        hv_.render();
+        pv_.render();
+        fp_.render();
+        xp_.render();
+        sp_.render();
+        ip_.render();
+        gv_.render();
+        out_.render();
+        srch_.render();
+        ev_.render();
+        cgv_.render();
+        tp_.render();
+        diffv_.render();
+
+        if (show_goto_)     show_goto_dlg();
+        if (show_rename_)   show_rename_dlg();
+        if (show_rebase_)   show_rebase_dlg();
+        if (show_comment_)  show_comment_dlg();
+        if (show_segments_) show_segments_dlg();
+        if (show_bookmarks_) show_bookmarks_dlg();
+        if (show_sigs_) show_sigs_dlg();
+        if (show_apply_type_) show_apply_type_dlg();
+
+        renderer_.end_frame();
+    }
+
+    renderer_.shutdown();
+    return 0;
+}
+
+void App::open_file(const char* path) {
+    out_.log(fmt::format("Loading: {}", path));
+    file_path_ = path;
+
+    auto result = loader_.load(path);
+    if (!result) { out_.log("ERROR: load failed"); return; }
+
+    img_ = std::make_unique<PEImage>(std::move(*result));
+    out_.log(fmt::format("Base: 0x{:X}  Entry: 0x{:X}  Arch: {}",
+        img_->base, img_->entry, img_->arch == Arch::X64 ? "x64" : "x86"));
+    out_.log(fmt::format("Sections: {}  Imports: {}  Exports: {}",
+        img_->segments.size(), img_->imports.size(), img_->exports.size()));
+
+    busy_ = true;
+    analysis_done_ = false;
+    analyzer_ = std::make_unique<Analyzer>(*img_, pool_);
+
+    std::thread([this]() {
+        analyzer_->run();
+        analysis_done_ = true;
+    }).detach();
+}
+
+void App::build_default_layout(ImGuiID dock_id) {
+    ImGui::DockBuilderRemoveNode(dock_id);
+    ImGui::DockBuilderAddNode(dock_id, ImGuiDockNodeFlags_DockSpace);
+    ImGui::DockBuilderSetNodeSize(dock_id, ImGui::GetMainViewport()->WorkSize);
+
+    ImGuiID center = dock_id;
+    ImGuiID left   = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.20f, nullptr, &center);
+    ImGuiID right  = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.35f, nullptr, &center);
+    ImGuiID bottom = ImGui::DockBuilderSplitNode(center, ImGuiDir_Down, 0.25f, nullptr, &center);
+
+    ImGui::DockBuilderDockWindow("Functions", left);
+    ImGui::DockBuilderDockWindow("Strings", left);
+    ImGui::DockBuilderDockWindow("Imports / Exports", left);
+    ImGui::DockBuilderDockWindow("Types", left);
+
+    ImGui::DockBuilderDockWindow("Disassembly", center);
+    ImGui::DockBuilderDockWindow("Hex View", center);
+
+    ImGui::DockBuilderDockWindow("Pseudo Code", right);
+    ImGui::DockBuilderDockWindow("Graph", right);
+    ImGui::DockBuilderDockWindow("Call Graph", right);
+
+    ImGui::DockBuilderDockWindow("Output", bottom);
+    ImGui::DockBuilderDockWindow("Xrefs", bottom);
+    ImGui::DockBuilderDockWindow("Search", bottom);
+    ImGui::DockBuilderDockWindow("Entropy", bottom);
+    ImGui::DockBuilderDockWindow("Diff View", bottom);
+
+    ImGui::DockBuilderFinish(dock_id);
+}
+
+void App::render_dockspace() {
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->WorkPos);
+    ImGui::SetNextWindowSize(vp->WorkSize);
+    ImGui::SetNextWindowViewport(vp->ID);
+
+    ImGuiWindowFlags fl = ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus |
+        ImGuiWindowFlags_MenuBar;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::Begin("##dock", nullptr, fl);
+    ImGui::PopStyleVar(3);
+
+    ImGuiID dock_id = ImGui::GetID("HyperionDock");
+    if (!layout_built_) {
+        build_default_layout(dock_id);
+        layout_built_ = true;
+    }
+    ImGui::DockSpace(dock_id, ImVec2(0, 0), ImGuiDockNodeFlags_PassthruCentralNode);
+
+    if (busy_) {
+        ImVec2 sz = vp->WorkSize;
+        ImGui::SetCursorPos(ImVec2(sz.x / 2 - 100, sz.y / 2 - 10));
+        ImGui::Text("Analyzing... %.0f%%", analyzer_ ? analyzer_->progress() * 100 : 0);
+        ImGui::SetCursorPos(ImVec2(sz.x / 2 - 100, sz.y / 2 + 10));
+        ImGui::ProgressBar(analyzer_ ? analyzer_->progress() : 0, ImVec2(200, 0));
+    }
+    ImGui::End();
+}
+
+void App::render_menubar() {
+    if (ImGui::BeginMainMenuBar()) {
+        if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("Open", "Ctrl+O")) {
+                auto p = open_dialog();
+                if (!p.empty()) open_file(p.c_str());
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Save Project", "Ctrl+S", false, img_ != nullptr)) {
+                auto pp = std::filesystem::path(file_path_).replace_extension(".hdb");
+                database_.save(pp, *img_, analyzer_->db());
+                out_.log("Saved: " + pp.string());
+            }
+            if (ImGui::MenuItem("Export IDA Script", nullptr, false, img_ != nullptr)) {
+                auto pp = std::filesystem::path(file_path_).replace_extension(".py");
+                ida_exp_.write(pp, *img_, analyzer_->db());
+                out_.log("Exported: " + pp.string());
+            }
+            if (ImGui::MenuItem("Export Patched Binary", nullptr, false, img_ != nullptr))
+                export_patched();
+            ImGui::Separator();
+            if (ImGui::MenuItem("Compare With...", nullptr, false, img_ != nullptr))
+                compare_with();
+            ImGui::Separator();
+            if (ImGui::MenuItem("Exit", "Alt+F4"))
+                glfwSetWindowShouldClose(renderer_.window(), GLFW_TRUE);
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Edit")) {
+            if (ImGui::MenuItem("Undo", "Ctrl+Z", false, undo_.can_undo())) {
+                auto d = undo_.undo();
+                out_.log("Undo: " + d);
+            }
+            if (ImGui::MenuItem("Redo", "Ctrl+Y", false, undo_.can_redo())) {
+                auto d = undo_.redo();
+                out_.log("Redo: " + d);
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Rename", "N", false, analyzer_ != nullptr)) show_rename_ = true;
+            if (ImGui::MenuItem("Comment", ";", false, analyzer_ != nullptr)) show_comment_ = true;
+            if (ImGui::MenuItem("Bookmark", "Ctrl+B", false, analyzer_ != nullptr)) {
+                add_bookmark(dv_.cursor(), "");
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Define Data", "D", false, analyzer_ != nullptr)) dv_.cmd_define_data();
+            if (ImGui::MenuItem("Define String", "A", false, analyzer_ != nullptr)) dv_.cmd_define_string();
+            if (ImGui::MenuItem("Undefine", "U", false, analyzer_ != nullptr)) dv_.cmd_undefine();
+            if (ImGui::MenuItem("Force Code", "C", false, analyzer_ != nullptr)) dv_.cmd_force_code();
+            if (ImGui::MenuItem("Toggle Hex", "H", false, analyzer_ != nullptr)) dv_.cmd_toggle_hex();
+            if (ImGui::MenuItem("NOP Out", nullptr, false, analyzer_ != nullptr)) dv_.cmd_nop();
+            ImGui::Separator();
+            if (ImGui::MenuItem("Rebase...", nullptr, false, img_ != nullptr)) show_rebase_ = true;
+            if (ImGui::MenuItem("Apply Signatures", nullptr, false, analyzer_ != nullptr)) {
+                analyzer_->apply_signatures();
+                out_.log("Signatures re-applied");
+            }
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("View")) {
+            if (ImGui::MenuItem("Types", "T", false, analyzer_ != nullptr)) {}
+            if (ImGui::MenuItem("Segments", nullptr, false, img_ != nullptr)) show_segments_ = true;
+            if (ImGui::MenuItem("Bookmarks", "Ctrl+M")) show_bookmarks_ = true;
+            if (ImGui::MenuItem("Signatures", nullptr, false, analyzer_ != nullptr)) show_sigs_ = true;
+            ImGui::Separator();
+            if (ImGui::BeginMenu("Theme")) {
+                if (ImGui::MenuItem("Binary Ninja", nullptr, g_theme == Theme::BinaryNinja)) {
+                    g_theme = Theme::BinaryNinja; apply_theme();
+                }
+                if (ImGui::MenuItem("IDA", nullptr, g_theme == Theme::IDA)) {
+                    g_theme = Theme::IDA; apply_theme();
+                }
+                if (ImGui::MenuItem("Midnight", nullptr, g_theme == Theme::Midnight)) {
+                    g_theme = Theme::Midnight; apply_theme();
+                }
+                ImGui::EndMenu();
+            }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Reset Layout")) layout_built_ = false;
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Search")) {
+            if (ImGui::MenuItem("Text Search", "Ctrl+F")) srch_.open_text();
+            if (ImGui::MenuItem("Binary Search", "Alt+B")) srch_.open_binary();
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Navigate")) {
+            if (ImGui::MenuItem("Go to", "G")) show_goto_ = true;
+            if (ImGui::MenuItem("Back", "Alt+Left")) nav_back();
+            if (ImGui::MenuItem("Forward", "Alt+Right")) nav_fwd();
+            ImGui::Separator();
+            if (ImGui::MenuItem("Entry Point", nullptr, false, img_ != nullptr))
+                navigate_to(img_->entry);
+            ImGui::EndMenu();
+        }
+
+        float w = ImGui::GetWindowWidth();
+        if (busy_) {
+            ImGui::SameLine(w - 120);
+            ImGui::TextColored(ImVec4(1, 0.8f, 0.2f, 1), "Analyzing...");
+        } else if (analyzer_) {
+            ImGui::SameLine(w - 200);
+            ImGui::TextDisabled("%llu insns | %llu funcs",
+                (unsigned long long)analyzer_->db().insns.size(),
+                (unsigned long long)analyzer_->db().funcs.size());
+        }
+        ImGui::EndMainMenuBar();
+    }
+}
+
+void App::handle_keys() {
+    auto& io = ImGui::GetIO();
+    if (io.WantTextInput) return;
+
+    if (ImGui::IsKeyPressed(ImGuiKey_G) && !io.KeyCtrl) show_goto_ = true;
+    if (ImGui::IsKeyPressed(ImGuiKey_N) && !io.KeyCtrl) show_rename_ = true;
+    if (ImGui::IsKeyPressed(ImGuiKey_Semicolon)) show_comment_ = true;
+    if (ImGui::IsKeyPressed(ImGuiKey_X) && !io.KeyCtrl) {
+        va_t xaddr = dv_.cursor();
+        if (analyzer_) {
+            auto iit = analyzer_->db().insns.find(xaddr);
+            if (iit != analyzer_->db().insns.end() && iit->second.is_call()) {
+                va_t t = iit->second.branch_target();
+                if (t) xaddr = t;
+            }
+        }
+        xp_.show_for(xaddr);
+        xp_.show_popup(xaddr);
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Space) && !io.KeyCtrl) sync_panels(dv_.cursor());
+
+    // Data ops
+    if (ImGui::IsKeyPressed(ImGuiKey_D) && !io.KeyCtrl && analyzer_) dv_.cmd_define_data();
+    if (ImGui::IsKeyPressed(ImGuiKey_A) && !io.KeyCtrl && analyzer_) dv_.cmd_define_string();
+    if (ImGui::IsKeyPressed(ImGuiKey_U) && !io.KeyCtrl && analyzer_) dv_.cmd_undefine();
+    if (ImGui::IsKeyPressed(ImGuiKey_C) && !io.KeyCtrl && analyzer_) dv_.cmd_force_code();
+    if (ImGui::IsKeyPressed(ImGuiKey_H) && !io.KeyCtrl && analyzer_) dv_.cmd_toggle_hex();
+    if (ImGui::IsKeyPressed(ImGuiKey_T) && !io.KeyCtrl && analyzer_) show_apply_type_ = true;
+
+    // Enter = follow branch
+    if (ImGui::IsKeyPressed(ImGuiKey_Enter) && !io.KeyCtrl && analyzer_) {
+        auto* insn_ptr = analyzer_->db().insns.count(dv_.cursor()) ?
+            &analyzer_->db().insns.at(dv_.cursor()) : nullptr;
+        if (insn_ptr) {
+            va_t t = insn_ptr->branch_target();
+            if (t && analyzer_->db().insns.count(t)) {
+                navigate_to(t);
+                sync_panels(t);
+            }
+        }
+    }
+
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) nav_back();
+
+    // Ctrl shortcuts
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O)) {
+        auto p = open_dialog();
+        if (!p.empty()) open_file(p.c_str());
+    }
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S) && img_ && analyzer_) {
+        auto pp = std::filesystem::path(file_path_).replace_extension(".hdb");
+        database_.save(pp, *img_, analyzer_->db());
+        out_.log("Saved: " + pp.string());
+    }
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_B)) add_bookmark(dv_.cursor(), "");
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_M)) show_bookmarks_ = true;
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F)) srch_.open_text();
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Z)) {
+        if (undo_.can_undo()) { auto d = undo_.undo(); out_.log("Undo: " + d); }
+    }
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y)) {
+        if (undo_.can_redo()) { auto d = undo_.redo(); out_.log("Redo: " + d); }
+    }
+    if (io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_B)) srch_.open_binary();
+    if (io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) nav_back();
+    if (io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_RightArrow)) nav_fwd();
+
+    // Tab = switch disasm/graph
+    if (ImGui::IsKeyPressed(ImGuiKey_Tab) && !io.KeyCtrl)
+        sync_panels(dv_.cursor());
+}
+
+void App::navigate_to(va_t addr) {
+    if (hist_pos_ >= 0 && hist_pos_ < (int)hist_.size() && hist_[hist_pos_] == addr) return;
+    while ((int)hist_.size() > hist_pos_ + 1) hist_.pop_back();
+    hist_.push_back(addr);
+    hist_pos_ = (int)hist_.size() - 1;
+    if (hist_.size() > 2000) { hist_.pop_front(); --hist_pos_; }
+    dv_.goto_addr(addr);
+    hv_.sync_to(addr);
+}
+
+void App::sync_panels(va_t addr) {
+    va_t func = find_func_for(addr);
+    if (func) {
+        pv_.show_function(func);
+        pv_.highlight_addr(addr);
+        gv_.show_function(func);
+        cgv_.show_function(func);
+    }
+    xp_.show_for(addr);
+    hv_.sync_to(addr);
+}
+
+va_t App::find_func_for(va_t addr) {
+    if (!analyzer_) return 0;
+    auto& db = analyzer_->db();
+
+    if (db.funcs.count(addr)) return addr;
+    for (auto& [entry, func] : db.funcs) {
+        for (auto& [ba, bb] : func.blocks) {
+            if (addr >= bb.start && addr < bb.end)
+                return entry;
+        }
+    }
+    return 0;
+}
+
+void App::export_patched() {
+    if (!img_) return;
+    auto p = save_dialog();
+    if (p.empty()) return;
+
+    std::ifstream in(file_path_, std::ios::binary);
+    if (!in) { out_.log("ERROR: cannot read original file"); return; }
+    std::vector<u8> data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+
+    auto& db = analyzer_->db();
+    for (auto& [addr, patch] : db.patches) {
+        for (auto& seg : img_->segments) {
+            if (!seg.contains(addr)) continue;
+            size_t file_off_base = seg.file_off + static_cast<size_t>(addr - seg.va);
+            for (size_t i = 0; i < patch.size() && file_off_base + i < data.size(); ++i)
+                data[file_off_base + i] = patch[i];
+            break;
+        }
+    }
+
+    std::ofstream out(p, std::ios::binary);
+    out.write(reinterpret_cast<const char*>(data.data()), data.size());
+    out_.log(fmt::format("Patched binary exported: {}", p));
+}
+
+void App::rebase(va_t new_base) {
+    if (!img_ || !analyzer_) return;
+    va_t old_base = img_->base;
+    i64 delta = static_cast<i64>(new_base) - static_cast<i64>(old_base);
+    if (delta == 0) return;
+
+    out_.log(fmt::format("Rebasing: 0x{:X} -> 0x{:X} (delta {:+})", old_base, new_base, delta));
+
+    img_->base = new_base;
+    img_->entry = static_cast<va_t>(static_cast<i64>(img_->entry) + delta);
+    for (auto& seg : img_->segments)
+        seg.va = static_cast<va_t>(static_cast<i64>(seg.va) + delta);
+    for (auto& imp : img_->imports)
+        imp.iat_addr = static_cast<va_t>(static_cast<i64>(imp.iat_addr) + delta);
+    for (auto& exp : img_->exports)
+        exp.addr = static_cast<va_t>(static_cast<i64>(exp.addr) + delta);
+
+    auto& db = analyzer_->db();
+    std::unordered_map<va_t, Insn> new_insns;
+    for (auto& [addr, insn] : db.insns) {
+        insn.addr = static_cast<va_t>(static_cast<i64>(insn.addr) + delta);
+        new_insns[insn.addr] = std::move(insn);
+    }
+    db.insns = std::move(new_insns);
+
+    std::unordered_map<va_t, Function> new_funcs;
+    for (auto& [entry, func] : db.funcs) {
+        func.entry = static_cast<va_t>(static_cast<i64>(func.entry) + delta);
+        std::unordered_map<va_t, BasicBlock> new_blocks;
+        for (auto& [ba, bb] : func.blocks) {
+            bb.start = static_cast<va_t>(static_cast<i64>(bb.start) + delta);
+            bb.end = static_cast<va_t>(static_cast<i64>(bb.end) + delta);
+            for (auto& s : bb.succs) s = static_cast<va_t>(static_cast<i64>(s) + delta);
+            for (auto& p : bb.preds) p = static_cast<va_t>(static_cast<i64>(p) + delta);
+            for (auto& i : bb.insns) i.addr = static_cast<va_t>(static_cast<i64>(i.addr) + delta);
+            new_blocks[bb.start] = std::move(bb);
+        }
+        func.blocks = std::move(new_blocks);
+        func.block_addrs.clear();
+        for (auto& [ba, _] : func.blocks)
+            func.block_addrs.push_back(ba);
+        new_funcs[func.entry] = std::move(func);
+    }
+    db.funcs = std::move(new_funcs);
+
+    std::unordered_map<va_t, std::string> new_names;
+    for (auto& [addr, name] : db.names)
+        new_names[static_cast<va_t>(static_cast<i64>(addr) + delta)] = std::move(name);
+    db.names = std::move(new_names);
+
+    std::unordered_map<va_t, std::string> new_comments;
+    for (auto& [addr, cmt] : db.comments)
+        new_comments[static_cast<va_t>(static_cast<i64>(addr) + delta)] = std::move(cmt);
+    db.comments = std::move(new_comments);
+
+    for (auto& xr : db.xrefs) {
+        xr.from = static_cast<va_t>(static_cast<i64>(xr.from) + delta);
+        xr.to = static_cast<va_t>(static_cast<i64>(xr.to) + delta);
+    }
+    db.xrefs_to.clear();
+    db.xrefs_from.clear();
+    for (auto& xr : db.xrefs) {
+        db.xrefs_to[xr.to].push_back(xr);
+        db.xrefs_from[xr.from].push_back(xr);
+    }
+
+    for (auto& [addr, str] : db.strings)
+        addr = static_cast<va_t>(static_cast<i64>(addr) + delta);
+
+    for (auto& bm : bookmarks_)
+        bm.addr = static_cast<va_t>(static_cast<i64>(bm.addr) + delta);
+
+    // rebuild xref indices
+    db.xrefs_to.clear();
+    db.xrefs_from.clear();
+    for (auto& xr : db.xrefs) {
+        db.xrefs_to[xr.to].push_back(xr);
+        db.xrefs_from[xr.from].push_back(xr);
+    }
+
+    // rebase data items and patches
+    std::unordered_map<va_t, DataItem> new_data;
+    for (auto& [a, d] : db.data_items) {
+        va_t na = static_cast<va_t>(static_cast<i64>(a) + delta);
+        new_data[na] = d;
+    }
+    db.data_items = std::move(new_data);
+
+    std::unordered_map<va_t, std::vector<u8>> new_patches;
+    for (auto& [a, v] : db.patches)
+        new_patches[static_cast<va_t>(static_cast<i64>(a) + delta)] = std::move(v);
+    db.patches = std::move(new_patches);
+
+    std::unordered_set<va_t> new_hex;
+    for (auto a : db.hex_display)
+        new_hex.insert(static_cast<va_t>(static_cast<i64>(a) + delta));
+    db.hex_display = std::move(new_hex);
+
+    dv_.set_data(&db, img_.get());
+    gv_.set_data(&db);
+    fp_.set_data(&db);
+    sp_.set_data(&db);
+    xp_.set_data(&db);
+    xp_.set_img(img_.get());
+    pv_.set_data(&db);
+    ip_.set_data(img_.get());
+    hv_.set_data(img_.get());
+
+    navigate_to(img_->entry);
+    out_.log(fmt::format("Rebased: 0x{:X} -> 0x{:X} (delta={:+})", old_base, new_base, delta));
+}
+
+void App::add_bookmark(va_t addr, const std::string& label) {
+    if (!addr) return;
+    std::string lbl = label.empty() ? fmt::format("bmark_{:X}", addr) : label;
+    bookmarks_.push_back({addr, lbl});
+    out_.log(fmt::format("Bookmark: {} @ 0x{:X}", lbl, addr));
+}
+
+void App::nav_back() {
+    if (hist_pos_ > 0) {
+        --hist_pos_;
+        dv_.goto_addr(hist_[hist_pos_]);
+        hv_.sync_to(hist_[hist_pos_]);
+        sync_panels(hist_[hist_pos_]);
+    }
+}
+
+void App::nav_fwd() {
+    if (hist_pos_ < (int)hist_.size() - 1) {
+        ++hist_pos_;
+        dv_.goto_addr(hist_[hist_pos_]);
+        hv_.sync_to(hist_[hist_pos_]);
+        sync_panels(hist_[hist_pos_]);
+    }
+}
+
+void App::show_goto_dlg() {
+    ImGui::OpenPopup("Go to");
+    if (ImGui::BeginPopupModal("Go to", &show_goto_, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::SetKeyboardFocusHere();
+        bool go = ImGui::InputText("Address (hex)", goto_buf_, sizeof(goto_buf_),
+            ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CharsHexadecimal);
+        if (go || ImGui::Button("Go")) {
+            va_t a = std::strtoull(goto_buf_, nullptr, 16);
+            if (a) { navigate_to(a); sync_panels(a); }
+            show_goto_ = false; goto_buf_[0] = 0;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) { show_goto_ = false; ImGui::CloseCurrentPopup(); }
+        ImGui::EndPopup();
+    }
+}
+
+void App::show_rename_dlg() {
+    ImGui::OpenPopup("Rename");
+    if (ImGui::BeginPopupModal("Rename", &show_rename_, ImGuiWindowFlags_AlwaysAutoResize)) {
+        va_t cur = dv_.cursor();
+        ImGui::Text("Address: 0x%016llX", (unsigned long long)cur);
+        if (analyzer_) {
+            auto nit = analyzer_->db().names.find(cur);
+            if (nit != analyzer_->db().names.end())
+                ImGui::TextDisabled("Current: %s", nit->second.c_str());
+        }
+        ImGui::Separator();
+        ImGui::SetKeyboardFocusHere();
+        bool go = ImGui::InputText("New name", rename_buf_, sizeof(rename_buf_), ImGuiInputTextFlags_EnterReturnsTrue);
+        if (go || ImGui::Button("OK")) {
+            if (analyzer_ && rename_buf_[0]) {
+                auto& db = analyzer_->db();
+                std::string old_name;
+                auto nit = db.names.find(cur);
+                if (nit != db.names.end()) old_name = nit->second;
+                std::string new_name(rename_buf_);
+                db.set_name(cur, new_name);
+                undo_.push({
+                    [&db, cur, old_name]() { if (old_name.empty()) db.names.erase(cur); else db.set_name(cur, old_name); },
+                    [&db, cur, new_name]() { db.set_name(cur, new_name); },
+                    "rename"
+                });
+                out_.log(fmt::format("Renamed 0x{:X} -> {}", cur, rename_buf_));
+            }
+            show_rename_ = false; rename_buf_[0] = 0;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) { show_rename_ = false; ImGui::CloseCurrentPopup(); }
+        ImGui::EndPopup();
+    }
+}
+
+void App::show_rebase_dlg() {
+    ImGui::OpenPopup("Rebase Program");
+    if (ImGui::BeginPopupModal("Rebase Program", &show_rebase_, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (!img_) { ImGui::EndPopup(); return; }
+
+        ImGui::Text("Current image base: 0x%016llX", (unsigned long long)img_->base);
+        ImGui::Text("Entry point:        0x%016llX", (unsigned long long)img_->entry);
+        ImGui::Separator();
+
+        static int mode = 0;
+        ImGui::RadioButton("New base address", &mode, 0);
+        ImGui::RadioButton("Delta (shift by)", &mode, 1);
+        ImGui::Spacing();
+
+        if (mode == 0) {
+            ImGui::SetNextItemWidth(200);
+            ImGui::InputText("New base (hex)", rebase_buf_, sizeof(rebase_buf_),
+                ImGuiInputTextFlags_CharsHexadecimal);
+            va_t nb = std::strtoull(rebase_buf_, nullptr, 16);
+            i64 delta = static_cast<i64>(nb) - static_cast<i64>(img_->base);
+            ImGui::TextDisabled("Delta: %s0x%llX", delta >= 0 ? "+" : "-",
+                (unsigned long long)(delta >= 0 ? delta : -delta));
+        } else {
+            static char delta_buf[64] = {};
+            static bool negative = false;
+            ImGui::Checkbox("Negative", &negative);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(160);
+            ImGui::InputText("Delta (hex)", delta_buf, sizeof(delta_buf),
+                ImGuiInputTextFlags_CharsHexadecimal);
+            u64 d = std::strtoull(delta_buf, nullptr, 16);
+            va_t preview = negative ? img_->base - d : img_->base + d;
+            ImGui::TextDisabled("New base would be: 0x%016llX", (unsigned long long)preview);
+            // store computed value in rebase_buf for the rebase call
+            snprintf(rebase_buf_, sizeof(rebase_buf_), "%llX", (unsigned long long)preview);
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+
+        if (ImGui::Button("Rebase", ImVec2(100, 0))) {
+            va_t nb = std::strtoull(rebase_buf_, nullptr, 16);
+            if (nb != img_->base) rebase(nb);
+            else if (nb == 0 && rebase_buf_[0] == '0') rebase(0);
+            show_rebase_ = false; rebase_buf_[0] = 0;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100, 0))) { show_rebase_ = false; ImGui::CloseCurrentPopup(); }
+        ImGui::EndPopup();
+    }
+}
+
+void App::show_comment_dlg() {
+    ImGui::OpenPopup("Comment");
+    if (ImGui::BeginPopupModal("Comment", &show_comment_, ImGuiWindowFlags_AlwaysAutoResize)) {
+        va_t cur = dv_.cursor();
+        ImGui::Text("0x%016llX", (unsigned long long)cur);
+        if (analyzer_) {
+            auto cit = analyzer_->db().comments.find(cur);
+            if (cit != analyzer_->db().comments.end()) {
+                ImGui::TextDisabled("Current: %s", cit->second.c_str());
+                if (comment_buf_[0] == 0)
+                    strncpy(comment_buf_, cit->second.c_str(), sizeof(comment_buf_) - 1);
+            }
+        }
+        ImGui::Separator();
+        ImGui::SetKeyboardFocusHere();
+        bool go = ImGui::InputText("Comment", comment_buf_, sizeof(comment_buf_), ImGuiInputTextFlags_EnterReturnsTrue);
+        if (go || ImGui::Button("OK")) {
+            if (analyzer_) {
+                auto& db = analyzer_->db();
+                std::string old_cmt;
+                auto cit = db.comments.find(cur);
+                if (cit != db.comments.end()) old_cmt = cit->second;
+                std::string new_cmt(comment_buf_);
+                {
+                    std::lock_guard lk(db.mtx);
+                    if (new_cmt.empty()) db.comments.erase(cur);
+                    else db.comments[cur] = new_cmt;
+                }
+                undo_.push({
+                    [&db, cur, old_cmt]() { std::lock_guard lk(db.mtx); if (old_cmt.empty()) db.comments.erase(cur); else db.comments[cur] = old_cmt; },
+                    [&db, cur, new_cmt]() { std::lock_guard lk(db.mtx); if (new_cmt.empty()) db.comments.erase(cur); else db.comments[cur] = new_cmt; },
+                    "comment"
+                });
+            }
+            show_comment_ = false; comment_buf_[0] = 0;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) { show_comment_ = false; ImGui::CloseCurrentPopup(); }
+        ImGui::EndPopup();
+    }
+}
+
+void App::show_segments_dlg() {
+    ImGui::OpenPopup("Segments");
+    if (ImGui::BeginPopupModal("Segments", &show_segments_, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (img_ && ImGui::BeginTable("##segs", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders)) {
+            ImGui::TableSetupColumn("Name");
+            ImGui::TableSetupColumn("Start");
+            ImGui::TableSetupColumn("Size");
+            ImGui::TableSetupColumn("RWX");
+            ImGui::TableSetupColumn("Raw Size");
+            ImGui::TableHeadersRow();
+
+            for (auto& seg : img_->segments) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::Text("%s", seg.name.c_str());
+                ImGui::TableNextColumn(); ImGui::Text("0x%016llX", (unsigned long long)seg.va);
+                ImGui::TableNextColumn(); ImGui::Text("0x%llX", (unsigned long long)seg.size);
+                ImGui::TableNextColumn();
+                std::string perms;
+                if (seg.readable()) perms += "R";
+                if (seg.writable()) perms += "W";
+                if (seg.executable()) perms += "X";
+                ImGui::Text("%s", perms.c_str());
+                ImGui::TableNextColumn(); ImGui::Text("0x%llX", (unsigned long long)seg.file_sz);
+            }
+            ImGui::EndTable();
+        }
+        if (ImGui::Button("Close")) { show_segments_ = false; ImGui::CloseCurrentPopup(); }
+        ImGui::EndPopup();
+    }
+}
+
+void App::show_bookmarks_dlg() {
+    ImGui::OpenPopup("Bookmarks");
+    if (ImGui::BeginPopupModal("Bookmarks", &show_bookmarks_, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (ImGui::Button("Add current")) add_bookmark(dv_.cursor(), "");
+        ImGui::Separator();
+
+        if (ImGui::BeginTable("##bm", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders)) {
+            ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 150);
+            ImGui::TableSetupColumn("Label");
+            ImGui::TableSetupColumn("##del", ImGuiTableColumnFlags_WidthFixed, 30);
+            ImGui::TableHeadersRow();
+
+            int to_delete = -1;
+            for (int i = 0; i < (int)bookmarks_.size(); i++) {
+                auto& bm = bookmarks_[i];
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                auto lbl = fmt::format("{:016X}", bm.addr);
+                if (ImGui::Selectable(lbl.c_str(), false, ImGuiSelectableFlags_SpanAllColumns)) {
+                    navigate_to(bm.addr);
+                    sync_panels(bm.addr);
+                }
+                ImGui::TableNextColumn(); ImGui::Text("%s", bm.label.c_str());
+                ImGui::TableNextColumn();
+                ImGui::PushID(i);
+                if (ImGui::SmallButton("X")) to_delete = i;
+                ImGui::PopID();
+            }
+            if (to_delete >= 0)
+                bookmarks_.erase(bookmarks_.begin() + to_delete);
+            ImGui::EndTable();
+        }
+        if (ImGui::Button("Close")) { show_bookmarks_ = false; ImGui::CloseCurrentPopup(); }
+        ImGui::EndPopup();
+    }
+}
+
+void App::show_sigs_dlg() {
+    ImGui::OpenPopup("Signature Libraries");
+    ImVec2 center = ImGui::GetMainViewport()->GetCenter();
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, {0.5f, 0.5f});
+    ImGui::SetNextWindowSize({600, 450}, ImGuiCond_Appearing);
+
+    if (ImGui::BeginPopupModal("Signature Libraries", &show_sigs_, ImGuiWindowFlags_NoScrollbar)) {
+        auto& flirt = analyzer_->sig_matcher().flirt();
+        auto& sigs = flirt.sigs();
+
+        ImGui::Text("Loaded: %d .sig files, %d extracted names, %d byte patterns",
+            (int)sigs.size(), flirt.total_names(), analyzer_->sig_matcher().sig_count());
+        ImGui::Separator();
+
+        if (ImGui::BeginTable("##sigtbl", 5,
+            ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY,
+            {0, -30})) {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("File", ImGuiTableColumnFlags_WidthFixed, 120);
+            ImGui::TableSetupColumn("Library", ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableSetupColumn("Arch", ImGuiTableColumnFlags_WidthFixed, 50);
+            ImGui::TableSetupColumn("Types", ImGuiTableColumnFlags_WidthFixed, 80);
+            ImGui::TableSetupColumn("Names", ImGuiTableColumnFlags_WidthFixed, 60);
+            ImGui::TableHeadersRow();
+
+            for (auto& s : sigs) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(s.filename.c_str());
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(s.library_name.c_str());
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(FlirtLoader::arch_str(s.arch).c_str());
+                ImGui::TableNextColumn(); ImGui::TextUnformatted(FlirtLoader::file_types_str(s.file_types).c_str());
+                ImGui::TableNextColumn(); ImGui::Text("%d", (int)s.extracted_names.size());
+            }
+            ImGui::EndTable();
+        }
+        if (ImGui::Button("Close")) { show_sigs_ = false; ImGui::CloseCurrentPopup(); }
+        ImGui::EndPopup();
+    }
+}
+
+void App::show_apply_type_dlg() {
+    ImGui::OpenPopup("Apply Type");
+    if (ImGui::BeginPopupModal("Apply Type", &show_apply_type_, ImGuiWindowFlags_AlwaysAutoResize)) {
+        if (!analyzer_) { ImGui::EndPopup(); return; }
+        va_t cur = dv_.cursor();
+        ImGui::Text("Address: 0x%016llX", (unsigned long long)cur);
+        ImGui::Separator();
+        ImGui::InputTextWithHint("##tfilter", "Filter...", type_filter_, sizeof(type_filter_));
+
+        auto& ts = analyzer_->db().types;
+        std::string filt(type_filter_);
+        std::transform(filt.begin(), filt.end(), filt.begin(), ::tolower);
+
+        ImGui::BeginChild("##tlist", ImVec2(300, 250));
+        for (auto& [id, td] : ts.all()) {
+            if (td.kind != TypeKind::Struct && td.kind != TypeKind::Enum) continue;
+            if (!filt.empty()) {
+                std::string ln = td.name;
+                std::transform(ln.begin(), ln.end(), ln.begin(), ::tolower);
+                if (ln.find(filt) == std::string::npos) continue;
+            }
+            if (ImGui::Selectable(td.name.c_str())) {
+                analyzer_->db().applied_types[cur] = id;
+                show_apply_type_ = false;
+                type_filter_[0] = 0;
+                ImGui::CloseCurrentPopup();
+                break;
+            }
+        }
+        ImGui::EndChild();
+
+        if (ImGui::Button("Remove Applied") && analyzer_->db().applied_types.count(cur)) {
+            analyzer_->db().applied_types.erase(cur);
+            show_apply_type_ = false;
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) { show_apply_type_ = false; ImGui::CloseCurrentPopup(); }
+        ImGui::EndPopup();
+    }
+}
+
+void App::compare_with() {
+    auto p = open_dialog();
+    if (p.empty()) return;
+
+    out_.log(fmt::format("Diff: loading {}", p));
+    auto result = loader_.load(p.c_str());
+    if (!result) { out_.log("ERROR: diff load failed"); return; }
+
+    diff_img_ = std::make_unique<PEImage>(std::move(*result));
+    diff_analyzer_ = std::make_unique<Analyzer>(*diff_img_, pool_);
+
+    std::thread([this]() {
+        diff_analyzer_->run();
+        BinDiff differ;
+        diff_results_ = differ.compare(analyzer_->db(), diff_analyzer_->db());
+        diff_done_ = true;
+    }).detach();
+}
+
+}
