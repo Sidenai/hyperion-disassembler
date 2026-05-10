@@ -16,14 +16,30 @@ void DisasmView::rebuild() {
     if (!db_) return;
     addrs_.clear();
     addrs_.reserve(db_->insns.size() + db_->data_items.size());
-    for (auto& [a, _] : db_->insns)
-        addrs_.push_back(a);
-    for (auto& [a, _] : db_->data_items)
-        addrs_.push_back(a);
+
+    if (beautify_) {
+        // only show instructions inside functions + important data
+        for (auto& [entry, func] : db_->funcs) {
+            for (auto& [ba, bb] : func.blocks) {
+                for (auto& insn : bb.insns)
+                    addrs_.push_back(insn.addr);
+            }
+        }
+        // include IAT entries, strings, pointers
+        for (auto& [a, item] : db_->data_items) {
+            if (item.style == DataStyle::Import || item.style == DataStyle::String || item.style == DataStyle::Pointer)
+                addrs_.push_back(a);
+        }
+    } else {
+        for (auto& [a, _] : db_->insns)
+            addrs_.push_back(a);
+        for (auto& [a, _] : db_->data_items)
+            addrs_.push_back(a);
+    }
+
     std::sort(addrs_.begin(), addrs_.end());
     addrs_.erase(std::unique(addrs_.begin(), addrs_.end()), addrs_.end());
 
-    // build string address lookup
     str_map_.clear();
     for (auto& [addr, str] : db_->strings)
         str_map_[addr] = &str;
@@ -254,6 +270,12 @@ void DisasmView::render() {
     if (dirty_) rebuild();
     if (addrs_.empty()) { ImGui::TextDisabled("No instructions"); ImGui::End(); return; }
 
+    // toolbar
+    if (ImGui::Checkbox("Beautify", &beautify_)) dirty_ = true;
+    ImGui::SameLine();
+    ImGui::TextDisabled("(%d items)", (int)addrs_.size());
+    ImGui::Separator();
+
     float lh = ImGui::GetTextLineHeightWithSpacing();
     int total = static_cast<int>(addrs_.size());
 
@@ -279,6 +301,25 @@ void DisasmView::render() {
     while (clip.Step()) {
         for (int i = clip.DisplayStart; i < clip.DisplayEnd; ++i) {
             va_t a = addrs_[i];
+
+            if (img_ && i > 0) {
+                va_t prev_a = addrs_[i - 1];
+                const Segment* cur_seg = nullptr;
+                const Segment* prev_seg = nullptr;
+                for (auto& seg : img_->segments) {
+                    if (seg.contains(a)) cur_seg = &seg;
+                    if (seg.contains(prev_a)) prev_seg = &seg;
+                }
+                if (cur_seg && cur_seg != prev_seg) {
+                    ImVec2 sp = ImGui::GetCursorScreenPos();
+                    float aw = ImGui::GetContentRegionAvail().x;
+                    if (aw < 100) aw = 1200;
+                    auto hdr = fmt::format("; === {} ===", cur_seg->name);
+                    ImGui::GetWindowDrawList()->AddText(ImVec2(sp.x + 4, sp.y), col::comment(), hdr.c_str());
+                    ImGui::Dummy(ImVec2(aw, lh));
+                }
+            }
+
             auto dit = db_->data_items.find(a);
             if (dit != db_->data_items.end()) {
                 render_data_line(dit->second, lh);
@@ -313,7 +354,23 @@ void DisasmView::render_data_line(const DataItem& item, float lh) {
     dl->AddText(ImVec2(x, y), is_cursor ? IM_COL32(130, 190, 255, 255) : col::addr(), addr_s.c_str());
     x += ImGui::CalcTextSize("0000000000000000").x + 14;
 
-    if (item.is_string) {
+    auto nit = db_->names.find(item.addr);
+
+    switch (item.style) {
+    case DataStyle::Import: {
+        std::string func_name;
+        if (nit != db_->names.end()) {
+            auto sep = nit->second.find('!');
+            func_name = (sep != std::string::npos) ? nit->second.substr(sep + 1) : nit->second;
+        } else {
+            func_name = fmt::format("unk_{:X}", item.addr);
+        }
+        const char* sz_kw = (item.size == DataSize::Qword) ? "qword" : "dword";
+        auto lbl = fmt::format("extrn {}:{}", func_name, sz_kw);
+        dl->AddText(ImVec2(x, y), IM_COL32(80, 210, 230, 255), lbl.c_str());
+        break;
+    }
+    case DataStyle::String: {
         std::string val = "\"";
         if (img_) {
             for (auto& seg : img_->segments) {
@@ -324,10 +381,58 @@ void DisasmView::render_data_line(const DataItem& item, float lh) {
                 break;
             }
         }
-        val += "\"";
-        auto lbl = fmt::format("db  {}", val);
+        val += "\", 0";
+        auto lbl = fmt::format("db    {}", val);
         dl->AddText(ImVec2(x, y), col::str(), lbl.c_str());
-    } else {
+        break;
+    }
+    case DataStyle::Pointer: {
+        u64 val = 0;
+        if (img_) {
+            for (auto& seg : img_->segments) {
+                if (!seg.contains(item.addr)) continue;
+                size_t off = static_cast<size_t>(item.addr - seg.va);
+                size_t sz = static_cast<size_t>(item.size);
+                if (off + sz <= seg.data.size())
+                    memcpy(&val, seg.data.data() + off, sz);
+                break;
+            }
+        }
+        const char* dir = (item.size == DataSize::Qword) ? "dq" : "dd";
+        std::string target_name;
+        auto tit = db_->names.find(static_cast<va_t>(val));
+        if (tit != db_->names.end())
+            target_name = tit->second;
+        else
+            target_name = fmt::format("sub_{:X}", val);
+        auto lbl = fmt::format("{}    offset {}", dir, target_name);
+        dl->AddText(ImVec2(x, y), IM_COL32(100, 160, 255, 255), lbl.c_str());
+        break;
+    }
+    case DataStyle::Align: {
+        size_t run_bytes = static_cast<size_t>(item.size);
+        if (img_) {
+            for (auto& seg : img_->segments) {
+                if (!seg.contains(item.addr)) continue;
+                size_t off = static_cast<size_t>(item.addr - seg.va);
+                size_t ptr_sz = static_cast<size_t>(item.size);
+                size_t j = off;
+                while (j + ptr_sz <= seg.data.size()) {
+                    va_t zv = 0;
+                    memcpy(&zv, seg.data.data() + j, ptr_sz);
+                    if (zv != 0) break;
+                    j += ptr_sz;
+                }
+                run_bytes = j - off;
+                break;
+            }
+        }
+        auto lbl = fmt::format("align {:X}h", run_bytes);
+        dl->AddText(ImVec2(x, y), IM_COL32(100, 100, 110, 255), lbl.c_str());
+        break;
+    }
+    case DataStyle::Raw:
+    default: {
         const char* dir = "db";
         switch (item.size) {
             case DataSize::Word:  dir = "dw"; break;
@@ -346,8 +451,16 @@ void DisasmView::render_data_line(const DataItem& item, float lh) {
                 break;
             }
         }
-        auto lbl = fmt::format("{}  0x{:X}", dir, val);
+        auto lbl = fmt::format("{}    0x{:X}", dir, val);
         dl->AddText(ImVec2(x, y), col::imm(), lbl.c_str());
+        break;
+    }
+    }
+
+    if (nit != db_->names.end() && item.style != DataStyle::Import) {
+        float nx = pos.x + avail_w - ImGui::CalcTextSize(nit->second.c_str()).x - 16;
+        if (nx > x + 200)
+            dl->AddText(ImVec2(nx, y), col::comment(), fmt::format("; {}", nit->second).c_str());
     }
 
     ImGui::InvisibleButton("##dl", ImVec2(avail_w, lh));

@@ -13,12 +13,15 @@ namespace hype {
 
 enum class DataSize : u8 { Byte = 1, Word = 2, Dword = 4, Qword = 8 };
 
+enum class DataStyle : u8 { Raw, Pointer, String, Import, Align };
+
 enum class CallConv : u8 { Unknown, Cdecl, Stdcall, Fastcall, Thiscall, X64 };
 
 struct DataItem {
-    va_t     addr;
-    DataSize size;
-    bool     is_string = false;
+    va_t      addr;
+    DataSize  size;
+    DataStyle style = DataStyle::Raw;
+    bool      is_string = false;
 };
 
 struct BasicBlock {
@@ -102,16 +105,16 @@ struct AnalysisDB {
         names[addr] = std::move(n);
     }
 
-    void define_data(va_t addr, DataSize sz) {
+    void define_data(va_t addr, DataSize sz, DataStyle style = DataStyle::Raw) {
         std::lock_guard lk(mtx);
         insns.erase(addr);
-        data_items[addr] = {addr, sz, false};
+        data_items[addr] = {addr, sz, style, false};
     }
 
     void define_string(va_t addr) {
         std::lock_guard lk(mtx);
         insns.erase(addr);
-        data_items[addr] = {addr, DataSize::Byte, true};
+        data_items[addr] = {addr, DataSize::Byte, DataStyle::String, true};
     }
 
     void undefine(va_t addr) {

@@ -24,6 +24,7 @@ public:
     void goto_addr(va_t addr);
     void render();
     va_t cursor() const { return cursor_; }
+    bool& beautify() { return beautify_; }
 
     void cmd_define_data();
     void cmd_define_string();
@@ -48,6 +49,7 @@ private:
     bool              scroll_pending_ = false;
     std::vector<va_t> addrs_;
     bool              dirty_ = true;
+    bool              beautify_ = false;
     u16               highlighted_reg_ = 0;
     std::unordered_set<va_t> reg_highlight_addrs_;
     std::unordered_map<va_t, const std::string*> str_map_;
