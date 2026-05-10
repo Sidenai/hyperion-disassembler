@@ -187,6 +187,7 @@ void GraphView::render() {
         ty += 3 * zoom_;
 
         auto bit = func.blocks.find(n.addr);
+        va_t clicked_target = 0;
         if (bit != func.blocks.end()) {
             int max_lines = static_cast<int>((br.y - ty) / (font_sz + 1));
             int shown = 0;
@@ -200,8 +201,24 @@ void GraphView::render() {
                 else if (insn.is_branch()) mc = IM_COL32(100, 200, 140, 255);
                 else if (insn.is_ret()) mc = IM_COL32(220, 100, 100, 255);
 
+                float line_top = ty;
+                float line_bot = ty + font_sz + 1;
+
+                // highlight hovered instruction line
+                bool line_hovered = hovered && mouse.y >= line_top && mouse.y < line_bot;
+                if (line_hovered)
+                    dl->AddRectFilled(ImVec2(tl.x + 2, line_top), ImVec2(br.x - 2, line_bot),
+                        IM_COL32(50, 60, 90, 150));
+
                 auto ln = fmt::format("{} {}", insn.mnemonic, insn.op_str);
                 dl->AddText(nullptr, font_sz, ImVec2(tx, ty), mc, ln.c_str());
+
+                // detect click on call/branch to follow
+                if (line_hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                    va_t t = insn.branch_target();
+                    if (t) clicked_target = t;
+                }
+
                 ty += font_sz + 1;
                 ++shown;
             }
@@ -209,8 +226,12 @@ void GraphView::render() {
 
         dl->PopClipRect();
 
-        // click to navigate (left click on node)
-        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        // double-click on call/branch line follows target
+        if (clicked_target && nav_) {
+            nav_(clicked_target);
+        }
+        // single click on node navigates to block start
+        else if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             if (nav_) nav_(n.addr);
         }
     }

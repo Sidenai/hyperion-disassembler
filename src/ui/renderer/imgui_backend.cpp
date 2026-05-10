@@ -38,6 +38,15 @@ bool Renderer::init(int w, int h, const char* title) {
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.IniFilename = "hyperion_layout.ini";
 
+    // load Segoe UI as default, Consolas as monospace fallback
+    ImFontConfig cfg;
+    cfg.OversampleH = 2;
+    cfg.OversampleV = 1;
+    io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 15.0f, &cfg);
+    ImFontConfig mono_cfg;
+    mono_cfg.OversampleH = 2;
+    io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\consola.ttf", 14.0f, &mono_cfg);
+
     ImGui_ImplGlfw_InitForOpenGL(wnd_, true);
     ImGui_ImplOpenGL3_Init("#version 330");
     return true;

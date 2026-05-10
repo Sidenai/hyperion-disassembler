@@ -67,7 +67,8 @@ void DiffView::render() {
             ImGui::TextColored(col, "%s", label);
 
             ImGui::TableNextColumn();
-            if (ImGui::Selectable(r.name.c_str(), false, ImGuiSelectableFlags_SpanAllColumns)) {
+            auto sel_id = fmt::format("{}##{:X}{:X}", r.name, r.addr_a, r.addr_b);
+            if (ImGui::Selectable(sel_id.c_str(), false, ImGuiSelectableFlags_SpanAllColumns)) {
                 va_t target = r.addr_a ? r.addr_a : r.addr_b;
                 if (nav_ && target) nav_(target);
             }

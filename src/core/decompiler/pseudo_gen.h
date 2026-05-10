@@ -18,7 +18,7 @@ public:
 private:
     void emit_block(const BasicBlock& bb, const AnalysisDB& db,
                     std::vector<PseudoLine>& out, int indent);
-    std::string operand_to_c(const Insn& insn, int op_idx);
+    std::string operand_to_c(const Insn& insn, int op_idx, const AnalysisDB& db);
 };
 
 }

@@ -81,8 +81,13 @@ bool Disassembler::decode(va_t addr, const u8* data, size_t len, Insn& out) {
 
     std::string full(buf);
     auto sp = full.find(' ');
-    out.mnemonic = (sp != std::string::npos) ? full.substr(0, sp) : full;
-    out.op_str = (sp != std::string::npos) ? full.substr(sp + 1) : "";
+    if (sp != std::string::npos) {
+        out.set_mnemonic(full.substr(0, sp).c_str());
+        out.set_op_str(full.substr(sp + 1).c_str());
+    } else {
+        out.set_mnemonic(full.c_str());
+        out.op_str[0] = '\0';
+    }
 
     out.op_count = 0;
     for (u8 i = 0; i < zi.operand_count_visible && i < 4; ++i) {
@@ -135,8 +140,10 @@ std::vector<Insn> Disassembler::decode_range(va_t start, const u8* data, size_t 
             bad.len = 1;
             bad.type = InsnType::Unknown;
             bad.bytes[0] = data[off];
-            bad.mnemonic = "db";
-            bad.op_str = fmt::format("0x{:02X}", data[off]);
+            bad.set_mnemonic("db");
+            char tmp[16];
+            std::snprintf(tmp, sizeof(tmp), "0x%02X", data[off]);
+            bad.set_op_str(tmp);
             result.push_back(std::move(bad));
             ++off;
         }

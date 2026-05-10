@@ -2,10 +2,12 @@
 #include "core/analysis/analysis_db.h"
 #include "core/loader/pe_loader.h"
 #include "core/disasm/disassembler.h"
+#include "core/undo.h"
 #include <imgui.h>
 #include <functional>
 #include <vector>
 #include <unordered_set>
+#include <unordered_map>
 
 namespace hype {
 
@@ -17,6 +19,7 @@ public:
 
     void set_data(AnalysisDB* db, PEImage* img) { db_ = db; img_ = img; dirty_ = true; }
     void set_nav(NavCB cb) { nav_ = std::move(cb); }
+    void set_undo(UndoManager* u) { undo_ = u; }
     void set_stack_frame_view(StackFrameView* sfv) { sfv_ = sfv; }
     void goto_addr(va_t addr);
     void render();
@@ -38,6 +41,7 @@ private:
     AnalysisDB*       db_ = nullptr;
     PEImage*          img_ = nullptr;
     StackFrameView*   sfv_ = nullptr;
+    UndoManager*      undo_ = nullptr;
     NavCB             nav_;
     va_t              cursor_ = 0;
     va_t              scroll_to_ = 0;
@@ -46,6 +50,7 @@ private:
     bool              dirty_ = true;
     u16               highlighted_reg_ = 0;
     std::unordered_set<va_t> reg_highlight_addrs_;
+    std::unordered_map<va_t, const std::string*> str_map_;
 };
 
 }

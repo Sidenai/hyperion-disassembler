@@ -5,14 +5,20 @@
 
 namespace hype {
 
+struct RuntimeFunc {
+    va_t start;
+    va_t end;
+};
+
 struct PEImage {
-    Arch                  arch;
-    va_t                  base;
-    va_t                  entry;
-    std::vector<Segment>  segments;
-    std::vector<Import>   imports;
-    std::vector<Export>   exports;
-    std::vector<u8>       raw;
+    Arch                       arch;
+    va_t                       base;
+    va_t                       entry;
+    std::vector<Segment>       segments;
+    std::vector<Import>        imports;
+    std::vector<Export>        exports;
+    std::vector<RuntimeFunc>   runtime_funcs;
+    std::vector<u8>            raw;
 };
 
 class PELoader {
@@ -24,6 +30,7 @@ private:
     bool parse_sections(PEImage& img);
     bool parse_imports(PEImage& img);
     bool parse_exports(PEImage& img);
+    void parse_exceptions(PEImage& img);
 
     const u8* base_ = nullptr;
     size_t    size_ = 0;

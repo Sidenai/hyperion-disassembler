@@ -73,6 +73,7 @@ void TypesPanel::render_list() {
 }
 
 void TypesPanel::render_detail() {
+    if (!db_) { ImGui::TextDisabled("No data"); return; }
     auto* td = db_->types.get(selected_);
     if (!td) { ImGui::TextDisabled("Select a type"); return; }
 

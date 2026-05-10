@@ -1,6 +1,6 @@
 #pragma once
 #include "core/analysis/analysis_db.h"
-#include "core/decompiler/pseudo_gen.h"
+#include "core/decompiler/decompiler.h"
 #include <imgui.h>
 #include <functional>
 #include <vector>
@@ -22,7 +22,7 @@ private:
     va_t                    func_ = 0;
     va_t                    hl_ = 0;
     std::vector<PseudoLine> lines_;
-    PseudoGen               gen_;
+    Decompiler              dec_;
 };
 
 }

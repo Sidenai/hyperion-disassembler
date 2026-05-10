@@ -11,6 +11,7 @@ void HexView::nop_selection() {
     va_t hi = std::max(sel_start_, sel_end_);
     for (auto& seg : img_->segments) {
         if (!seg.contains(lo)) continue;
+        if (seg.data.empty()) break;
         size_t off_lo = static_cast<size_t>(lo - seg.va);
         size_t off_hi = static_cast<size_t>(hi - seg.va);
         off_hi = std::min(off_hi, seg.data.size() - 1);

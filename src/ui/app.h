@@ -2,6 +2,7 @@
 #include "core/loader/pe_loader.h"
 #include "core/analysis/analyzer.h"
 #include "core/analysis/bindiff.h"
+#include "core/analysis/packer_detect.h"
 #include "core/database/database.h"
 #include "core/database/export/ida_export.h"
 #include "core/undo.h"
@@ -22,12 +23,14 @@
 #include "ui/widgets/types_panel.h"
 #include "ui/widgets/diff_view.h"
 #include "ui/widgets/stack_frame_view.h"
+#include "ui/widgets/pe_header_view.h"
 #include <memory>
 #include <string>
 #include <deque>
 #include <filesystem>
 #include <atomic>
 #include <unordered_map>
+#include <chrono>
 
 namespace hype {
 
@@ -60,6 +63,11 @@ private:
     void rebase(va_t new_base);
     void add_bookmark(va_t addr, const std::string& label);
     void export_patched();
+    void export_asm();
+    void load_recent_files();
+    void save_recent_files();
+    void add_recent_file(const std::string& path);
+    void autosave_tick();
 
     Renderer         renderer_;
     WorkerPool       pool_;
@@ -86,6 +94,7 @@ private:
     TypesPanel       tp_;
     DiffView         diffv_;
     StackFrameView   sfv_;
+    PEHeaderView     pehv_;
 
     std::unique_ptr<PEImage>   diff_img_;
     std::unique_ptr<Analyzer>  diff_analyzer_;
@@ -115,6 +124,12 @@ private:
 
     struct Bookmark { va_t addr; std::string label; };
     std::vector<Bookmark> bookmarks_;
+
+    std::deque<std::string> recent_files_;
+    bool                    autosave_enabled_ = true;
+    std::chrono::steady_clock::time_point last_autosave_;
+
+    std::vector<PackerInfo> packer_results_;
 };
 
 }

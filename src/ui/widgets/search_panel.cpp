@@ -17,6 +17,7 @@ std::vector<u8> parse_hex_pattern(const char* s, std::vector<bool>& mask) {
             mask.push_back(false);
             s += 2;
         } else {
+            if (!s[1]) break;
             char tmp[3] = {s[0], s[1], 0};
             bytes.push_back(static_cast<u8>(strtoul(tmp, nullptr, 16)));
             mask.push_back(true);
