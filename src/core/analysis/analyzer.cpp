@@ -138,6 +138,9 @@ void Analyzer::run() {
     recover_structs();
     progress_ = 0.97f;
 
+    populate_data_sections();
+    progress_ = 0.99f;
+
     apply_names();
     progress_ = 1.0f;
 
@@ -170,7 +173,6 @@ void Analyzer::linear_sweep() {
 void Analyzer::merge_tentative() {
     if (tentative_.empty()) return;
 
-    // build sorted list of confirmed instruction ranges for fast overlap check
     std::vector<std::pair<va_t, va_t>> confirmed;
     confirmed.reserve(db_.insns.size());
     for (auto& [addr, insn] : db_.insns)
@@ -179,20 +181,18 @@ void Analyzer::merge_tentative() {
 
     for (auto& [addr, insn] : tentative_) {
         if (db_.insns.count(addr)) continue;
+        if (!is_code_addr(addr)) continue;
 
         va_t end = addr + insn.len;
 
-        // binary search for potential overlaps
         auto it = std::lower_bound(confirmed.begin(), confirmed.end(),
             std::make_pair(addr, va_t(0)));
 
         bool overlaps = false;
-        // check if previous confirmed instruction extends past our start
         if (it != confirmed.begin()) {
             auto prev = std::prev(it);
             if (prev->second > addr) overlaps = true;
         }
-        // check if our instruction extends into the next confirmed one
         if (!overlaps && it != confirmed.end() && it->first < end)
             overlaps = true;
 
@@ -217,6 +217,7 @@ void Analyzer::descend(va_t addr, std::unordered_set<va_t>& visited) {
     while (!wl.empty()) {
         va_t cur = wl.front(); wl.pop();
         if (visited.count(cur)) continue;
+        if (!is_code_addr(cur)) continue;
         visited.insert(cur);
 
         size_t max_len = 0;
@@ -655,11 +656,17 @@ void Analyzer::apply_names() {
     for (auto& exp : img_.exports) {
         std::string demangled = demangle(exp.name);
         db_.set_name(exp.addr, demangled);
-        // also update function name if exists
         auto fit = db_.funcs.find(exp.addr);
         if (fit != db_.funcs.end())
             fit->second.name = demangled;
     }
+
+    DataSize ptr_size = (img_.arch == Arch::X64) ? DataSize::Qword : DataSize::Dword;
+    for (auto& imp : img_.imports) {
+        db_.insns.erase(imp.iat_addr);
+        db_.data_items[imp.iat_addr] = {imp.iat_addr, ptr_size, DataStyle::Import, false};
+    }
+    spdlog::info("defined {} IAT data items", img_.imports.size());
 }
 
 void Analyzer::apply_signatures() {
@@ -977,6 +984,86 @@ void Analyzer::recover_structs() {
         }
     }
     spdlog::info("recovered {} struct types", count);
+}
+
+void Analyzer::populate_data_sections() {
+    constexpr size_t kLargeSectionThreshold = 5ULL * 1024 * 1024;
+    constexpr u32    kZeroRunThreshold = 4;
+
+    std::unordered_set<va_t> str_addrs;
+    for (auto& [addr, _] : db_.strings)
+        str_addrs.insert(addr);
+
+    std::unordered_set<va_t> iat_addrs;
+    for (auto& imp : img_.imports)
+        iat_addrs.insert(imp.iat_addr);
+
+    size_t ptr_sz = (img_.arch == Arch::X64) ? 8 : 4;
+    DataSize ds = (img_.arch == Arch::X64) ? DataSize::Qword : DataSize::Dword;
+    u32 defined = 0;
+
+    for (auto& seg : img_.segments) {
+        if (seg.executable() || seg.data.empty()) continue;
+
+        bool large = seg.data.size() > kLargeSectionThreshold;
+        const u8* data = seg.data.data();
+        size_t sz = seg.data.size();
+
+        for (size_t i = 0; i + ptr_sz <= sz; i += ptr_sz) {
+            va_t addr = seg.va + i;
+
+            if (db_.data_items.count(addr)) continue;
+            if (str_addrs.count(addr)) continue;
+            if (iat_addrs.count(addr)) continue;
+
+            va_t val = 0;
+            if (ptr_sz == 8)
+                std::memcpy(&val, data + i, 8);
+            else {
+                u32 v = 0; std::memcpy(&v, data + i, 4); val = v;
+            }
+
+            if (val == 0) {
+                u32 run = 0;
+                size_t j = i;
+                while (j + ptr_sz <= sz) {
+                    va_t zv = 0;
+                    if (ptr_sz == 8)
+                        std::memcpy(&zv, data + j, 8);
+                    else {
+                        u32 v2 = 0; std::memcpy(&v2, data + j, 4); zv = v2;
+                    }
+                    if (zv != 0) break;
+                    ++run;
+                    j += ptr_sz;
+                }
+                if (run >= kZeroRunThreshold) {
+                    db_.data_items[addr] = {addr, ds, DataStyle::Align, false};
+                    i = j - ptr_sz;
+                    ++defined;
+                    continue;
+                }
+            }
+
+            if (large && !db_.xrefs_to.count(addr) && !is_code_addr(val))
+                continue;
+
+            if (is_code_addr(val)) {
+                db_.data_items[addr] = {addr, ds, DataStyle::Pointer, false};
+            } else {
+                db_.data_items[addr] = {addr, ds, DataStyle::Raw, false};
+            }
+            ++defined;
+        }
+    }
+
+    for (auto& imp : img_.imports) {
+        auto it = db_.data_items.find(imp.iat_addr);
+        if (it != db_.data_items.end())
+            it->second.style = DataStyle::Import;
+    }
+
+    spdlog::info("populate_data_sections: defined {} data items", defined);
 }
 
 }

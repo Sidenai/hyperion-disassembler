@@ -42,6 +42,7 @@ private:
     void propagate_dataflow();
     void detect_loops();
     void recover_structs();
+    void populate_data_sections();
 
     void descend(va_t addr, std::unordered_set<va_t>& visited);
     const u8* va_to_ptr(va_t addr, size_t* max_len = nullptr);

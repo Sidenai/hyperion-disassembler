@@ -1,4 +1,4 @@
-﻿#include "app.h"
+#include "app.h"
 #include "ui/theme.h"
 #include "core/analysis/packer_detect.h"
 #include <imgui.h>
