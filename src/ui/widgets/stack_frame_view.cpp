@@ -171,7 +171,7 @@ void StackFrameView::render() {
 }
 
 std::string format_operand_with_vars(const Insn& insn, const StackFrame* frame) {
-    if (!frame || insn.op_str.empty()) return insn.op_str;
+    if (!frame || !insn.op_str[0]) return std::string(insn.op_str);
 
     std::string result = insn.op_str;
 

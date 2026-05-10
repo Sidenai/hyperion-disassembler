@@ -32,7 +32,7 @@ std::string XrefsPanel::insn_text(va_t addr) const {
     auto it = db_->insns.find(addr);
     if (it == db_->insns.end()) return {};
     auto& insn = it->second;
-    if (insn.op_str.empty()) return insn.mnemonic;
+    if (!insn.op_str[0]) return std::string(insn.mnemonic);
     return fmt::format("{} {}", insn.mnemonic, insn.op_str);
 }
 
@@ -63,7 +63,7 @@ void XrefsPanel::render_popup() {
                 for (auto& x : it->second) {
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn();
-                    auto addr_s = fmt::format("{:016X}##xp{}", x.from, (size_t)&x);
+                    auto addr_s = fmt::format("{:016X}##xp{:X}", x.from, x.from);
                     if (ImGui::Selectable(addr_s.c_str(), false, ImGuiSelectableFlags_SpanAllColumns)) {
                         if (nav_) nav_(x.from);
                         ImGui::CloseCurrentPopup();
@@ -110,7 +110,7 @@ void XrefsPanel::render() {
                     for (auto& x : it->second) {
                         ImGui::TableNextRow();
                         ImGui::TableNextColumn();
-                        auto lbl = fmt::format("{:016X}##to{}", x.from, (size_t)&x);
+                        auto lbl = fmt::format("{:016X}##to{:X}", x.from, x.from);
                         if (ImGui::Selectable(lbl.c_str(), false, ImGuiSelectableFlags_SpanAllColumns))
                             if (nav_) nav_(x.from);
                         ImGui::TableNextColumn();
@@ -141,7 +141,7 @@ void XrefsPanel::render() {
                     for (auto& x : it->second) {
                         ImGui::TableNextRow();
                         ImGui::TableNextColumn();
-                        auto lbl = fmt::format("{:016X}##fr{}", x.to, (size_t)&x);
+                        auto lbl = fmt::format("{:016X}##fr{:X}", x.to, x.to);
                         if (ImGui::Selectable(lbl.c_str(), false, ImGuiSelectableFlags_SpanAllColumns))
                             if (nav_) nav_(x.to);
                         ImGui::TableNextColumn();

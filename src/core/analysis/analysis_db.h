@@ -13,6 +13,8 @@ namespace hype {
 
 enum class DataSize : u8 { Byte = 1, Word = 2, Dword = 4, Qword = 8 };
 
+enum class CallConv : u8 { Unknown, Cdecl, Stdcall, Fastcall, Thiscall, X64 };
+
 struct DataItem {
     va_t     addr;
     DataSize size;
@@ -27,12 +29,21 @@ struct BasicBlock {
     std::vector<va_t> preds;
 };
 
+struct LoopInfo {
+    va_t header;
+    va_t back_edge_src;
+    u16  induction_reg = 0;
+};
+
 struct Function {
     va_t                                     entry;
     std::string                              name;
     std::vector<va_t>                        block_addrs;
     std::unordered_map<va_t, BasicBlock>     blocks;
     bool                                     analyzed = false;
+    bool                                     noreturn = false;
+    CallConv                                 callconv = CallConv::Unknown;
+    std::vector<LoopInfo>                    loops;
 };
 
 enum class XrefType : u8 { CodeCall, CodeJump, DataRead, DataWrite, DataOffset };
@@ -41,6 +52,17 @@ struct Xref {
     va_t     from;
     va_t     to;
     XrefType type;
+};
+
+struct Vtable {
+    va_t              addr;
+    std::vector<va_t> entries;
+};
+
+struct Global {
+    va_t        addr;
+    u32         size;
+    std::string name;
 };
 
 struct AnalysisDB {
@@ -56,6 +78,9 @@ struct AnalysisDB {
     std::unordered_set<va_t>                    hex_display;
     std::unordered_map<va_t, std::vector<u8>>   patches;
     std::unordered_map<va_t, u32>              applied_types;
+    std::vector<Vtable>                         vtables;
+    std::unordered_map<va_t, Global>            globals;
+    std::unordered_map<va_t, va_t>              resolved_indirect;
     TypeSystem                                  types;
     mutable std::mutex                          mtx;
 

@@ -23,12 +23,25 @@ void StringsPanel::render() {
             if (!filt.empty() && str.find(filt) == std::string::npos) continue;
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            auto lbl = fmt::format("{:016X}##s{}", addr, i);
-            if (ImGui::Selectable(lbl.c_str(), false, ImGuiSelectableFlags_SpanAllColumns))
-                if (nav_) nav_(addr);
-            ImGui::TableNextColumn();
+
             auto xit = db_->xrefs_to.find(addr);
             int cnt = xit != db_->xrefs_to.end() ? static_cast<int>(xit->second.size()) : 0;
+
+            // navigate to the instruction that references this string
+            va_t nav_target = 0;
+            if (cnt > 0)
+                nav_target = xit->second[0].from;
+
+            auto lbl = fmt::format("{:016X}##s{}", addr, i);
+            if (ImGui::Selectable(lbl.c_str(), false, ImGuiSelectableFlags_SpanAllColumns)) {
+                if (nav_) {
+                    if (nav_target)
+                        nav_(nav_target);
+                    else
+                        nav_(addr);  // will go to hex view via navigate_to fallback
+                }
+            }
+            ImGui::TableNextColumn();
             if (cnt > 0)
                 ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(col::xref()), "%d", cnt);
             else

@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <cstring>
 
 namespace hype {
 
@@ -30,11 +31,23 @@ struct Insn {
     u8          len;
     InsnType    type;
     u16         mnemonic_id;
-    std::string mnemonic;
-    std::string op_str;
+    char        mnemonic[12];
+    char        op_str[64];
     u8          bytes[15];
     Operand     ops[4];
     u8          op_count;
+
+    void set_mnemonic(const char* s) {
+        std::strncpy(mnemonic, s, sizeof(mnemonic) - 1);
+        mnemonic[sizeof(mnemonic) - 1] = '\0';
+    }
+    void set_mnemonic(const std::string& s) { set_mnemonic(s.c_str()); }
+
+    void set_op_str(const char* s) {
+        std::strncpy(op_str, s, sizeof(op_str) - 1);
+        op_str[sizeof(op_str) - 1] = '\0';
+    }
+    void set_op_str(const std::string& s) { set_op_str(s.c_str()); }
 
     bool is_branch()   const { return type == InsnType::Jmp || type == InsnType::Jcc; }
     bool is_call()     const { return type == InsnType::Call; }

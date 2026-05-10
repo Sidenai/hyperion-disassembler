@@ -12,7 +12,7 @@ void PseudoView::show_function(va_t entry) {
     auto it = db_->funcs.find(entry);
     if (it == db_->funcs.end()) return;
     if (it->second.blocks.empty()) return;
-    lines_ = gen_.generate(it->second, *db_);
+    lines_ = dec_.decompile(it->second, *db_);
 }
 
 void PseudoView::render() {
@@ -22,7 +22,7 @@ void PseudoView::render() {
     if (lines_.empty()) {
         auto it = db_->funcs.find(func_);
         if (it != db_->funcs.end() && !it->second.blocks.empty())
-            lines_ = gen_.generate(it->second, *db_);
+            lines_ = dec_.decompile(it->second, *db_);
     }
 
     if (lines_.empty()) {

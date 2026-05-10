@@ -1,11 +1,13 @@
 ﻿#include "app.h"
 #include "ui/theme.h"
+#include "core/analysis/packer_detect.h"
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <spdlog/spdlog.h>
 #include <fmt/format.h>
 #include <thread>
 #include <fstream>
+#include <cstring>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -47,6 +49,7 @@ std::string save_dialog() {
 App::App() : pool_(std::thread::hardware_concurrency()) {
     auto nav = [this](va_t a) { navigate_to(a); };
     dv_.set_nav(nav);
+    dv_.set_undo(&undo_);
     dv_.set_stack_frame_view(&sfv_);
     fp_.set_nav([this](va_t a) { navigate_to(a); sync_panels(a); });
     xp_.set_nav(nav);
@@ -58,6 +61,8 @@ App::App() : pool_(std::thread::hardware_concurrency()) {
     ev_.set_nav(nav);
     cgv_.set_nav(nav);
     diffv_.set_nav(nav);
+    load_recent_files();
+    last_autosave_ = std::chrono::steady_clock::now();
 }
 
 App::~App() = default;
@@ -87,6 +92,7 @@ int App::run() {
             xp_.set_img(img_.get());
             sp_.set_data(&db);
             ip_.set_data(img_.get());
+            ip_.set_db(&db);
             gv_.set_data(&db);
             srch_.set_data(&db, img_.get());
             ev_.set_data(img_.get());
@@ -123,6 +129,9 @@ int App::run() {
         tp_.render();
         diffv_.render();
         sfv_.render();
+        pehv_.render();
+
+        autosave_tick();
 
         if (show_goto_)     show_goto_dlg();
         if (show_rename_)   show_rename_dlg();
@@ -141,13 +150,43 @@ int App::run() {
 }
 
 void App::open_file(const char* path) {
+    if (busy_) return;  // don't allow opening while analyzing
+
     out_.log(fmt::format("Loading: {}", path));
     file_path_ = path;
+
+    // clear all widget references to old data
+    dv_.set_data(nullptr, nullptr);
+    hv_.set_data(nullptr);
+    pv_.set_data(nullptr);
+    fp_.set_data(nullptr);
+    xp_.set_data(nullptr);
+    sp_.set_data(nullptr);
+    ip_.set_data(nullptr);
+    ip_.set_db(nullptr);
+    gv_.set_data(nullptr);
+    srch_.set_data(nullptr, nullptr);
+    ev_.set_data(nullptr);
+    cgv_.set_data(nullptr);
+    tp_.set_data(nullptr);
+    sfv_.set_data(nullptr);
+    pehv_.set_data(nullptr);
 
     auto result = loader_.load(path);
     if (!result) { out_.log("ERROR: load failed"); return; }
 
     img_ = std::make_unique<PEImage>(std::move(*result));
+    pehv_.set_data(img_.get());
+    add_recent_file(file_path_);
+
+    PackerDetector pdet;
+    packer_results_ = pdet.detect(*img_);
+    pehv_.set_packer_results(&packer_results_);
+    for (auto& pi : packer_results_) {
+        out_.log(fmt::format("[!] Packed binary detected: {} (confidence: {:.0f}%)", pi.name, pi.confidence * 100));
+        out_.log("[!] Analysis may be incomplete - consider unpacking first");
+    }
+
     out_.log(fmt::format("Base: 0x{:X}  Entry: 0x{:X}  Arch: {}",
         img_->base, img_->entry, img_->arch == Arch::X64 ? "x64" : "x86"));
     out_.log(fmt::format("Sections: {}  Imports: {}  Exports: {}",
@@ -236,21 +275,33 @@ void App::render_menubar() {
                 auto p = open_dialog();
                 if (!p.empty()) open_file(p.c_str());
             }
+            if (ImGui::BeginMenu("Recent Files", !recent_files_.empty())) {
+                for (auto& rf : recent_files_) {
+                    auto fname = std::filesystem::path(rf).filename().string();
+                    if (ImGui::MenuItem(fname.c_str())) open_file(rf.c_str());
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", rf.c_str());
+                }
+                ImGui::EndMenu();
+            }
             ImGui::Separator();
-            if (ImGui::MenuItem("Save Project", "Ctrl+S", false, img_ != nullptr)) {
+            if (ImGui::MenuItem("Save Project", "Ctrl+S", false, img_ != nullptr && analyzer_ != nullptr)) {
                 auto pp = std::filesystem::path(file_path_).replace_extension(".hdb");
                 database_.save(pp, *img_, analyzer_->db());
                 out_.log("Saved: " + pp.string());
             }
-            if (ImGui::MenuItem("Export IDA Script", nullptr, false, img_ != nullptr)) {
+            if (ImGui::MenuItem("Export IDA Script", nullptr, false, img_ != nullptr && analyzer_ != nullptr)) {
                 auto pp = std::filesystem::path(file_path_).replace_extension(".py");
                 ida_exp_.write(pp, *img_, analyzer_->db());
                 out_.log("Exported: " + pp.string());
             }
-            if (ImGui::MenuItem("Export Patched Binary", nullptr, false, img_ != nullptr))
+            if (ImGui::MenuItem("Export Patched Binary", nullptr, false, img_ != nullptr && analyzer_ != nullptr))
                 export_patched();
+            if (ImGui::BeginMenu("Export", img_ != nullptr && analyzer_ != nullptr)) {
+                if (ImGui::MenuItem("Assembly Listing (.asm)")) export_asm();
+                ImGui::EndMenu();
+            }
             ImGui::Separator();
-            if (ImGui::MenuItem("Compare With...", nullptr, false, img_ != nullptr))
+            if (ImGui::MenuItem("Compare With...", nullptr, false, img_ != nullptr && analyzer_ != nullptr))
                 compare_with();
             ImGui::Separator();
             if (ImGui::MenuItem("Exit", "Alt+F4"))
@@ -286,12 +337,16 @@ void App::render_menubar() {
                 analyzer_->apply_signatures();
                 out_.log("Signatures re-applied");
             }
+            ImGui::Separator();
+            if (ImGui::MenuItem("Auto-save", nullptr, autosave_enabled_))
+                autosave_enabled_ = !autosave_enabled_;
             ImGui::EndMenu();
         }
 
         if (ImGui::BeginMenu("View")) {
             if (ImGui::MenuItem("Types", "T", false, analyzer_ != nullptr)) {}
             if (ImGui::MenuItem("Segments", nullptr, false, img_ != nullptr)) show_segments_ = true;
+            if (ImGui::MenuItem("PE Headers", nullptr, false, img_ != nullptr)) pehv_.visible_ = true;
             if (ImGui::MenuItem("Bookmarks", "Ctrl+M")) show_bookmarks_ = true;
             if (ImGui::MenuItem("Signatures", nullptr, false, analyzer_ != nullptr)) show_sigs_ = true;
             ImGui::Separator();
@@ -384,7 +439,16 @@ void App::handle_keys() {
         }
     }
 
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) nav_back();
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        if (show_goto_ || show_rename_ || show_rebase_ || show_comment_ ||
+            show_segments_ || show_bookmarks_ || show_sigs_ || show_apply_type_) {
+            show_goto_ = show_rename_ = show_rebase_ = show_comment_ = false;
+            show_segments_ = show_bookmarks_ = show_sigs_ = show_apply_type_ = false;
+            ImGui::CloseCurrentPopup();
+        } else {
+            nav_back();
+        }
+    }
 
     // Ctrl shortcuts
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O)) {
@@ -416,11 +480,26 @@ void App::handle_keys() {
 
 void App::navigate_to(va_t addr) {
     if (hist_pos_ >= 0 && hist_pos_ < (int)hist_.size() && hist_[hist_pos_] == addr) return;
+
+    va_t target = addr;
+
+    // if address isn't in instruction map, find first code xref to it
+    if (analyzer_ && !analyzer_->db().insns.count(addr)) {
+        auto xit = analyzer_->db().xrefs_to.find(addr);
+        if (xit != analyzer_->db().xrefs_to.end() && !xit->second.empty())
+            target = xit->second[0].from;
+        else {
+            // no xref found and not an instruction - just update hex view
+            hv_.sync_to(addr);
+            return;
+        }
+    }
+
     while ((int)hist_.size() > hist_pos_ + 1) hist_.pop_back();
-    hist_.push_back(addr);
+    hist_.push_back(target);
     hist_pos_ = (int)hist_.size() - 1;
     if (hist_.size() > 2000) { hist_.pop_front(); --hist_pos_; }
-    dv_.goto_addr(addr);
+    dv_.goto_addr(target);
     hv_.sync_to(addr);
 }
 
@@ -452,7 +531,7 @@ va_t App::find_func_for(va_t addr) {
 }
 
 void App::export_patched() {
-    if (!img_) return;
+    if (!img_ || !analyzer_) return;
     auto p = save_dialog();
     if (p.empty()) return;
 
@@ -590,9 +669,14 @@ void App::rebase(va_t new_base) {
 }
 
 void App::add_bookmark(va_t addr, const std::string& label) {
-    if (!addr) return;
     std::string lbl = label.empty() ? fmt::format("bmark_{:X}", addr) : label;
     bookmarks_.push_back({addr, lbl});
+    int idx = static_cast<int>(bookmarks_.size()) - 1;
+    undo_.push({
+        [this, idx]() { if (idx < (int)bookmarks_.size()) bookmarks_.erase(bookmarks_.begin() + idx); },
+        [this, addr, lbl]() { bookmarks_.push_back({addr, lbl}); },
+        "bookmark"
+    });
     out_.log(fmt::format("Bookmark: {} @ 0x{:X}", lbl, addr));
 }
 
@@ -827,8 +911,16 @@ void App::show_bookmarks_dlg() {
                 if (ImGui::SmallButton("X")) to_delete = i;
                 ImGui::PopID();
             }
-            if (to_delete >= 0)
+            if (to_delete >= 0) {
+                auto deleted = bookmarks_[to_delete];
+                int del_idx = to_delete;
                 bookmarks_.erase(bookmarks_.begin() + to_delete);
+                undo_.push({
+                    [this, del_idx, deleted]() { bookmarks_.insert(bookmarks_.begin() + (std::min)(del_idx, (int)bookmarks_.size()), deleted); },
+                    [this, del_idx]() { if (del_idx < (int)bookmarks_.size()) bookmarks_.erase(bookmarks_.begin() + del_idx); },
+                    "remove bookmark"
+                });
+            }
             ImGui::EndTable();
         }
         if (ImGui::Button("Close")) { show_bookmarks_ = false; ImGui::CloseCurrentPopup(); }
@@ -843,6 +935,7 @@ void App::show_sigs_dlg() {
     ImGui::SetNextWindowSize({600, 450}, ImGuiCond_Appearing);
 
     if (ImGui::BeginPopupModal("Signature Libraries", &show_sigs_, ImGuiWindowFlags_NoScrollbar)) {
+        if (!analyzer_) { ImGui::TextDisabled("No analysis data"); ImGui::EndPopup(); return; }
         auto& flirt = analyzer_->sig_matcher().flirt();
         auto& sigs = flirt.sigs();
 
@@ -898,7 +991,20 @@ void App::show_apply_type_dlg() {
                 if (ln.find(filt) == std::string::npos) continue;
             }
             if (ImGui::Selectable(td.name.c_str())) {
-                analyzer_->db().applied_types[cur] = id;
+                auto& db = analyzer_->db();
+                va_t addr = dv_.cursor();
+                u32 new_type_id = id;
+                bool had_type = db.applied_types.count(addr) > 0;
+                u32 old_type_id = had_type ? db.applied_types.at(addr) : 0;
+                db.applied_types[addr] = new_type_id;
+                undo_.push({
+                    [this, addr, had_type, old_type_id]() {
+                        if (had_type) analyzer_->db().applied_types[addr] = old_type_id;
+                        else analyzer_->db().applied_types.erase(addr);
+                    },
+                    [this, addr, new_type_id]() { analyzer_->db().applied_types[addr] = new_type_id; },
+                    "apply type"
+                });
                 show_apply_type_ = false;
                 type_filter_[0] = 0;
                 ImGui::CloseCurrentPopup();
@@ -908,7 +1014,14 @@ void App::show_apply_type_dlg() {
         ImGui::EndChild();
 
         if (ImGui::Button("Remove Applied") && analyzer_->db().applied_types.count(cur)) {
-            analyzer_->db().applied_types.erase(cur);
+            auto& db = analyzer_->db();
+            u32 old_type_id = db.applied_types.at(cur);
+            db.applied_types.erase(cur);
+            undo_.push({
+                [this, cur, old_type_id]() { analyzer_->db().applied_types[cur] = old_type_id; },
+                [this, cur]() { analyzer_->db().applied_types.erase(cur); },
+                "remove type"
+            });
             show_apply_type_ = false;
             ImGui::CloseCurrentPopup();
         }
@@ -919,6 +1032,7 @@ void App::show_apply_type_dlg() {
 }
 
 void App::compare_with() {
+    if (!analyzer_) return;
     auto p = open_dialog();
     if (p.empty()) return;
 
@@ -935,6 +1049,145 @@ void App::compare_with() {
         diff_results_ = differ.compare(analyzer_->db(), diff_analyzer_->db());
         diff_done_ = true;
     }).detach();
+}
+
+void App::load_recent_files() {
+    auto exe_dir = std::filesystem::path(__argv[0]).parent_path();
+    auto rf_path = exe_dir / "hyperion_recent.txt";
+    std::ifstream in(rf_path);
+    if (!in) return;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && recent_files_.size() < 10) {
+            if (std::filesystem::exists(line))
+                recent_files_.push_back(line);
+        }
+    }
+}
+
+void App::save_recent_files() {
+    auto exe_dir = std::filesystem::path(__argv[0]).parent_path();
+    auto rf_path = exe_dir / "hyperion_recent.txt";
+    std::ofstream out(rf_path);
+    for (auto& rf : recent_files_)
+        out << rf << "\n";
+}
+
+void App::add_recent_file(const std::string& path) {
+    auto it = std::find(recent_files_.begin(), recent_files_.end(), path);
+    if (it != recent_files_.end()) recent_files_.erase(it);
+    recent_files_.push_front(path);
+    if (recent_files_.size() > 10) recent_files_.pop_back();
+    save_recent_files();
+}
+
+void App::autosave_tick() {
+    if (!autosave_enabled_ || !analyzer_ || !img_ || busy_) return;
+    if (file_path_.empty()) return;
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - last_autosave_).count();
+    if (elapsed < 60) return;
+    last_autosave_ = now;
+    auto pp = std::filesystem::path(file_path_).replace_extension(".hdb");
+    database_.save(pp, *img_, analyzer_->db());
+    out_.log("Auto-saved");
+}
+
+void App::export_asm() {
+    if (!analyzer_ || !img_) return;
+    auto p = std::filesystem::path(file_path_).replace_extension(".asm");
+    std::ofstream out(p);
+    if (!out) { out_.log("ERROR: cannot create .asm file"); return; }
+
+    auto& db = analyzer_->db();
+    out << "; Assembly listing generated by Hyperion\n";
+    out << "; Source: " << file_path_ << "\n";
+    out << fmt::format("; Image base: 0x{:X}\n\n", img_->base);
+
+    for (auto& seg : img_->segments) {
+        out << fmt::format("; === Section: {} (0x{:X} - 0x{:X}) ===\n",
+            seg.name, seg.va, seg.va + seg.size);
+    }
+    out << "\n";
+
+    std::vector<va_t> sorted_funcs;
+    for (auto& [entry, _] : db.funcs) sorted_funcs.push_back(entry);
+    std::sort(sorted_funcs.begin(), sorted_funcs.end());
+
+    for (va_t entry : sorted_funcs) {
+        auto& func = db.funcs.at(entry);
+        out << "\n; " << std::string(60, '-') << "\n";
+        auto nit = db.names.find(entry);
+        std::string fname = nit != db.names.end() ? nit->second : func.name;
+        out << fmt::format("; Function: {}\n", fname);
+        out << "; " << std::string(60, '-') << "\n";
+
+        auto xit = db.xrefs_to.find(entry);
+        if (xit != db.xrefs_to.end() && !xit->second.empty()) {
+            out << "; xrefs:";
+            int xc = 0;
+            for (auto& xr : xit->second) {
+                if (xc++ >= 8) { out << " ..."; break; }
+                out << fmt::format(" 0x{:X}", xr.from);
+            }
+            out << "\n";
+        }
+
+        out << fname << " proc\n";
+
+        std::vector<va_t> block_order = func.block_addrs;
+        std::sort(block_order.begin(), block_order.end());
+
+        for (va_t ba : block_order) {
+            auto bit = func.blocks.find(ba);
+            if (bit == func.blocks.end()) continue;
+            auto& bb = bit->second;
+
+            if (ba != entry)
+                out << fmt::format("loc_{:X}:\n", ba);
+
+            for (auto& insn : bb.insns) {
+                std::string line = fmt::format("  {:016X}  ", insn.addr);
+                line += insn.mnemonic;
+                if (insn.op_str[0]) {
+                    size_t mlen = std::strlen(insn.mnemonic);
+                    size_t pad = 8 - (mlen < 7 ? mlen : 7);
+                    line += std::string(pad, ' ');
+                    line += insn.op_str;
+                }
+                auto cit = db.comments.find(insn.addr);
+                if (cit != db.comments.end())
+                    line += "  ; " + cit->second;
+                else {
+                    for (u8 i = 0; i < insn.op_count; ++i) {
+                        auto& op = insn.ops[i];
+                        va_t ref = 0;
+                        if (op.type == OpType::Mem && op.val) ref = op.val;
+                        else if (op.type == OpType::Imm && op.val > 0x10000) ref = op.val;
+                        if (!ref) continue;
+                        for (auto& [sa, ss] : db.strings) {
+                            if (sa == ref) {
+                                auto s = ss.size() > 40 ? ss.substr(0, 40) + "..." : ss;
+                                line += "  ; \"" + s + "\"";
+                                goto str_done;
+                            }
+                        }
+                        {
+                            auto nit2 = db.names.find(ref);
+                            if (nit2 != db.names.end())
+                                line += "  ; " + nit2->second;
+                        }
+                        str_done:
+                        break;
+                    }
+                }
+                out << line << "\n";
+            }
+        }
+        out << fname << " endp\n";
+    }
+
+    out_.log(fmt::format("Exported: {}", p.string()));
 }
 
 }
