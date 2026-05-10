@@ -7,7 +7,8 @@ A native x86/x64 disassembler and binary analysis tool for Windows PE files. Bui
 
 Hyperion performs recursive descent disassembly, automatic function detection, control flow graph construction, cross-reference analysis, and basic decompilation — all parallelized across available cores using a task-based scheduler.
 
-<img width="3430" height="1367" alt="image" src="https://github.com/user-attachments/assets/aeba409d-9437-47cf-bc76-a648f32c1432" />
+<img width="3440" height="1369" alt="image" src="https://github.com/user-attachments/assets/2e9c39c0-e866-46f9-9ce6-8cff0ff4b46a" />
+
 
 
 ## Community
