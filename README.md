@@ -6,6 +6,7 @@ A native x86/x64 disassembler and binary analysis tool for Windows PE files. Bui
 [![GitHub](https://img.shields.io/github/stars/mylovereturns/hyperion-disassembler?style=flat&label=Stars)](https://github.com/mylovereturns/hyperion-disassembler)
 
 Hyperion performs recursive descent disassembly, automatic function detection, control flow graph construction, cross-reference analysis, RTTI class recovery, and decompilation — all parallelized across available cores.
+<img width="2891" height="1146" alt="image" src="https://github.com/user-attachments/assets/a0cb18b1-109a-4e56-8aa8-58d34ced57af" />
 
 ## Community
 
