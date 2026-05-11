@@ -37,6 +37,7 @@ std::string demangle(const std::string& name) {
 Analyzer::Analyzer(PEImage& img, WorkerPool& pool)
     : img_(img), pool_(pool), sched_(pool) {
     disasm_.set_arch(img.arch);
+    db_.image_base = img.base;
 }
 
 const u8* Analyzer::va_to_ptr(va_t addr, size_t* max_len) {
@@ -138,11 +139,19 @@ void Analyzer::run() {
     recover_structs();
     progress_ = 0.97f;
 
+    propagate_interproc_types();
+    progress_ = 0.98f;
+
     populate_data_sections();
     progress_ = 0.99f;
 
     apply_names();
+    progress_ = 0.99f;
+
+    detect_main();
     progress_ = 1.0f;
+
+    rtti_.parse(img_, db_);
 
     spdlog::info("analysis: done - {} insns, {} funcs, {} xrefs, {} strings, {} vtables, {} globals, {} resolved_indirect",
                  db_.insns.size(), db_.funcs.size(), db_.xrefs.size(),
@@ -268,7 +277,7 @@ void Analyzer::detect_functions() {
     for (va_t e : entries) {
         Function func;
         func.entry = e;
-        func.name = fmt::format("sub_{:X}", e);
+        func.name = fmt::format("sub_{:X}", e - img_.base);
         db_.add_func(std::move(func));
     }
 
@@ -1064,6 +1073,152 @@ void Analyzer::populate_data_sections() {
     }
 
     spdlog::info("populate_data_sections: defined {} data items", defined);
+}
+
+void Analyzer::detect_main() {
+    static const std::unordered_set<std::string> crt_starters = {
+        "__scrt_common_main_seh", "mainCRTStartup", "__tmainCRTStartup",
+        "WinMainCRTStartup", "__wWinMainCRTStartup"
+    };
+
+    for (auto& [entry, func] : db_.funcs) {
+        if (!crt_starters.count(func.name)) continue;
+        if (!func.analyzed) continue;
+
+        for (auto& [ba, bb] : func.blocks) {
+            for (auto& insn : bb.insns) {
+                if (!insn.is_call()) continue;
+                va_t target = insn.branch_target();
+                if (!target) continue;
+                if (!db_.funcs.count(target)) continue;
+                if (crt_starters.count(db_.funcs[target].name)) continue;
+
+                auto& callee = db_.funcs[target];
+                bool is_winmain = func.name.find("WinMain") != std::string::npos;
+
+                if (is_winmain) {
+                    callee.name = "WinMain";
+                    db_.set_name(target, "WinMain");
+                } else {
+                    callee.name = "main";
+                    db_.set_name(target, "main");
+                }
+                spdlog::info("detected {} at {:X}", callee.name, target);
+                return;
+            }
+        }
+    }
+
+    // Fallback: entry calls a CRT stub which calls main
+    auto eit = db_.funcs.find(img_.entry);
+    if (eit == db_.funcs.end() || !eit->second.analyzed) return;
+
+    for (auto& [ba, bb] : eit->second.blocks) {
+        for (auto& insn : bb.insns) {
+            if (!insn.is_call()) continue;
+            va_t stub = insn.branch_target();
+            if (!stub || !db_.funcs.count(stub)) continue;
+            auto& stub_func = db_.funcs[stub];
+            if (!stub_func.analyzed) continue;
+
+            for (auto& [ba2, bb2] : stub_func.blocks) {
+                for (auto& ins2 : bb2.insns) {
+                    if (!ins2.is_call()) continue;
+                    va_t target = ins2.branch_target();
+                    if (!target || !db_.funcs.count(target)) continue;
+                    auto& callee = db_.funcs[target];
+                    if (callee.name.rfind("sub_", 0) != 0) continue;
+
+                    callee.name = "main";
+                    db_.set_name(target, "main");
+                    spdlog::info("detected main at {:X} (via entry stub)", target);
+                    return;
+                }
+            }
+        }
+    }
+}
+
+void Analyzer::propagate_interproc_types() {
+    static const std::unordered_map<std::string, FuncSignature> known_sigs = {
+        {"strlen",   {{"str"}, {"const char*"}, "size_t", 1}},
+        {"strcmp",   {{"s1","s2"}, {"const char*","const char*"}, "int32_t", 2}},
+        {"strcpy",   {{"dst","src"}, {"char*","const char*"}, "char*", 2}},
+        {"memcpy",   {{"dst","src","n"}, {"void*","const void*","size_t"}, "void*", 3}},
+        {"memset",   {{"dst","val","n"}, {"void*","int32_t","size_t"}, "void*", 3}},
+        {"malloc",   {{"size"}, {"size_t"}, "void*", 1}},
+        {"free",     {{"ptr"}, {"void*"}, "void", 1}},
+        {"printf",   {{"fmt"}, {"const char*"}, "int32_t", 1}},
+        {"CreateFileA", {{"lpFileName","dwDesiredAccess","dwShareMode","lpSecurity","dwCreation","dwFlags","hTemplate"},
+                         {"const char*","uint32_t","uint32_t","void*","uint32_t","uint32_t","void*"}, "void*", 7}},
+    };
+
+    u32 propagated = 0;
+
+    for (auto& [entry, func] : db_.funcs) {
+        auto kit = known_sigs.find(func.name);
+        if (kit != known_sigs.end()) {
+            db_.signatures[entry] = kit->second;
+            ++propagated;
+        }
+    }
+
+    for (auto& [entry, func] : db_.funcs) {
+        if (!func.analyzed) continue;
+
+        int param_reg_count = 0;
+        bool uses_rcx = false, uses_rdx = false, uses_r8 = false, uses_r9 = false;
+
+        for (auto& [ba, bb] : func.blocks) {
+            for (auto& insn : bb.insns) {
+                for (u8 i = 0; i < insn.op_count; ++i) {
+                    if (insn.ops[i].type == OpType::Reg) {
+                        if (insn.ops[i].reg == 1) uses_rcx = true;
+                        if (insn.ops[i].reg == 2) uses_rdx = true;
+                        if (insn.ops[i].reg == 8) uses_r8 = true;
+                        if (insn.ops[i].reg == 9) uses_r9 = true;
+                    }
+                }
+            }
+        }
+
+        if (uses_r9) param_reg_count = 4;
+        else if (uses_r8) param_reg_count = 3;
+        else if (uses_rdx) param_reg_count = 2;
+        else if (uses_rcx) param_reg_count = 1;
+
+        if (!db_.signatures.count(entry)) {
+            FuncSignature sig;
+            sig.param_count = param_reg_count;
+            sig.return_type = "int64_t";
+            for (int p = 0; p < param_reg_count; ++p) {
+                sig.param_names.push_back(fmt::format("a{}", p + 1));
+                sig.param_types.push_back("int64_t");
+            }
+            db_.signatures[entry] = std::move(sig);
+        }
+    }
+
+    for (auto& [entry, func] : db_.funcs) {
+        if (!func.analyzed) continue;
+        for (auto& [ba, bb] : func.blocks) {
+            for (auto& insn : bb.insns) {
+                if (!insn.is_call()) continue;
+                va_t target = insn.branch_target();
+                if (!target) continue;
+                auto sit = db_.signatures.find(target);
+                if (sit == db_.signatures.end()) continue;
+                auto& callee_sig = sit->second;
+
+                if (callee_sig.return_type != "int64_t") {
+                    auto& caller_sig = db_.signatures[entry];
+                    (void)caller_sig;
+                }
+            }
+        }
+    }
+
+    spdlog::info("interproc: propagated {} function signatures", propagated + (u32)db_.signatures.size());
 }
 
 }

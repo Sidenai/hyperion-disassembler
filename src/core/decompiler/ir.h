@@ -6,74 +6,80 @@
 
 namespace hype {
 
-enum class IROp : u8 {
-    Assign, Add, Sub, Mul, Div,
-    And, Or, Xor, Shl, Shr, Not, Neg,
-    Load, Store, Call, Ret, Cond, Goto, Phi, Nop,
-    Eq, Ne, Lt, Le, Gt, Ge, SignedLt, SignedLe, SignedGt, SignedGe
+enum class PcodeOp : u8 {
+    COPY, LOAD, STORE,
+    ADD, SUB, AND, OR, XOR,
+    INT_LESS, INT_SLESS, INT_EQUAL, INT_NEQUAL,
+    BOOL_AND, BOOL_OR, BOOL_NOT,
+    CALL, RETURN, BRANCH, CBRANCH,
+    SHIFT_LEFT, SHIFT_RIGHT,
+    INT_MULT, INT_DIV,
+    INT_ZEXT, INT_SEXT,
+    PIECE, SUBPIECE,
+    INT_NEGATE, INT_NOT,
+    NOP
 };
 
-struct IRVar {
-    int         id   = -1;
+enum class VarnodeKind : u8 { Reg, Temp, Const, Ram, Stack };
+
+struct Varnode {
+    VarnodeKind kind  = VarnodeKind::Const;
+    int         id    = -1;
+    int         size  = 8;
+    u64         offset = 0;
     std::string name;
-    int         size = 8;
 
-    bool valid() const { return id >= 0; }
-    bool operator==(const IRVar& o) const { return id == o.id; }
-    bool operator!=(const IRVar& o) const { return id != o.id; }
+    bool valid() const { return id >= 0 || kind == VarnodeKind::Const; }
+    bool is_reg() const { return kind == VarnodeKind::Reg; }
+    bool is_temp() const { return kind == VarnodeKind::Temp; }
+    bool is_const() const { return kind == VarnodeKind::Const; }
+    bool is_stack() const { return kind == VarnodeKind::Stack; }
+    bool operator==(const Varnode& o) const { return kind == o.kind && id == o.id && offset == o.offset; }
+    bool operator!=(const Varnode& o) const { return !(*this == o); }
 };
 
-struct IRExpr {
-    IROp                                op  = IROp::Nop;
-    std::variant<IRVar, u64, std::string> val;
-    std::vector<IRExpr>                 args;
+struct PcodeInsn {
+    PcodeOp              op = PcodeOp::NOP;
+    Varnode              output;
+    std::vector<Varnode> inputs;
+    va_t                 addr = 0;
+    int                  seq  = 0;
 
-    static IRExpr var(IRVar v) { IRExpr e; e.op = IROp::Assign; e.val = v; return e; }
-    static IRExpr imm(u64 v) { IRExpr e; e.op = IROp::Assign; e.val = v; return e; }
-    static IRExpr str(std::string s) { IRExpr e; e.op = IROp::Assign; e.val = std::move(s); return e; }
-    static IRExpr binop(IROp op, IRExpr l, IRExpr r) {
-        IRExpr e; e.op = op; e.args = {std::move(l), std::move(r)}; return e;
+    static PcodeInsn make(PcodeOp op, Varnode out, std::vector<Varnode> in, va_t a = 0) {
+        return {op, out, std::move(in), a, 0};
     }
-    static IRExpr unop(IROp op, IRExpr a) {
-        IRExpr e; e.op = op; e.args = {std::move(a)}; return e;
-    }
-    static IRExpr call(std::string name, std::vector<IRExpr> a) {
-        IRExpr e; e.op = IROp::Call; e.val = std::move(name); e.args = std::move(a); return e;
-    }
-    static IRExpr load(IRExpr addr, int sz) {
-        IRExpr e; e.op = IROp::Load; e.val = (u64)sz; e.args = {std::move(addr)}; return e;
-    }
-
-    bool is_var() const { return op == IROp::Assign && std::holds_alternative<IRVar>(val) && args.empty(); }
-    bool is_imm() const { return op == IROp::Assign && std::holds_alternative<u64>(val) && args.empty(); }
-    IRVar get_var() const { return std::get<IRVar>(val); }
-    u64   get_imm() const { return std::get<u64>(val); }
 };
 
-struct IRStmt {
-    IROp   op  = IROp::Nop;
-    IRVar  dst;
-    IRExpr src;
-    va_t   addr = 0;
+struct PcodeBlock {
+    int                    id = -1;
+    va_t                   addr = 0;
+    std::vector<PcodeInsn> ops;
+    std::vector<int>       succs;
+    std::vector<int>       preds;
+    bool                   has_return = false;
 };
 
-struct IRBlock {
-    va_t               addr = 0;
-    std::vector<IRStmt> stmts;
-    std::vector<va_t>  succs;
-    IRExpr             cond;
-    va_t               cond_true  = 0;
-    va_t               cond_false = 0;
-    bool               has_ret    = false;
+struct PcodeFunc {
+    va_t                    entry = 0;
+    std::string             name;
+    std::vector<PcodeBlock> blocks;
+    int                     next_temp = 0;
+    int                     next_ssa  = 0;
+    std::vector<Varnode>    params;
+    std::vector<Varnode>    locals;
 };
 
-struct IRFunc {
-    va_t               entry = 0;
-    std::string        name;
-    std::vector<IRBlock> blocks;
-    std::vector<IRVar> params;
-    std::vector<IRVar> locals;
-    int                next_var = 0;
-};
+inline Varnode vn_reg(int id, const char* name, int sz = 8) {
+    return {VarnodeKind::Reg, id, sz, 0, name};
+}
+inline Varnode vn_temp(int id, int sz = 8) {
+    return {VarnodeKind::Temp, id, sz, 0, {}};
+}
+inline Varnode vn_const(u64 val, int sz = 8) {
+    return {VarnodeKind::Const, -1, sz, val, {}};
+}
+inline Varnode vn_stack(int id, i64 off, int sz = 8) {
+    return {VarnodeKind::Stack, id, sz, static_cast<u64>(off), {}};
+}
 
 }

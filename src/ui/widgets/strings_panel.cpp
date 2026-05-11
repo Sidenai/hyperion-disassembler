@@ -9,6 +9,13 @@ void StringsPanel::render() {
     if (!db_) { ImGui::End(); return; }
 
     ImGui::InputTextWithHint("##sf", "Filter...", filter_, sizeof(filter_));
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Copy")) {
+        std::string out;
+        for (auto& [addr, str] : db_->strings)
+            out += fmt::format("{:016X}\t{}\n", addr, str);
+        ImGui::SetClipboardText(out.c_str());
+    }
     ImGui::Separator();
     std::string filt(filter_);
 

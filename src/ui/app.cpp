@@ -1,4 +1,4 @@
-#include "app.h"
+﻿#include "app.h"
 #include "ui/theme.h"
 #include "core/analysis/packer_detect.h"
 #include <imgui.h>
@@ -61,6 +61,8 @@ App::App() : pool_(std::thread::hardware_concurrency()) {
     ev_.set_nav(nav);
     cgv_.set_nav(nav);
     diffv_.set_nav(nav);
+    clsv_.set_nav(nav);
+    scriptc_.set_nav(nav);
     load_recent_files();
     last_autosave_ = std::chrono::steady_clock::now();
 }
@@ -86,7 +88,7 @@ int App::run() {
             dv_.set_data(&db, img_.get());
             hv_.set_data(img_.get());
             hv_.goto_addr(img_->entry);
-            pv_.set_data(&db);
+            pv_.set_data(&db, &analyzer_->rtti_parser());
             fp_.set_data(&db);
             xp_.set_data(&db);
             xp_.set_img(img_.get());
@@ -103,6 +105,23 @@ int App::run() {
             sync_panels(img_->entry);
             out_.log(fmt::format("Done: {} insns, {} funcs, {} xrefs, {} strings",
                 db.insns.size(), db.funcs.size(), db.xrefs.size(), db.strings.size()));
+            if (!analyzer_->rtti_parser().classes().empty())
+                out_.log(fmt::format("RTTI: found {} classes", analyzer_->rtti_parser().classes().size()));
+            clsv_.set_data(&analyzer_->rtti_parser(), &db);
+            
+            // PDB loading
+            auto pdb_path = PDBLoader::pdb_for(std::filesystem::path(file_path_));
+            if (!pdb_path.empty()) {
+                pdb_.load(pdb_path, img_->base, analyzer_->db());
+                out_.log(pdb_.status());
+            } else {
+                out_.log("No PDB found. For better analysis, place the .pdb next to the binary.");
+            }
+
+            // Lua scripting engine init
+            lua_.init(&analyzer_->db(), img_.get());
+            lua_.set_navigate_cb([this](va_t a) { navigate_to(a); sync_panels(a); });
+            scriptc_.set_engine(&lua_);
         }
 
         if (diff_done_.exchange(false)) {
@@ -130,6 +149,8 @@ int App::run() {
         diffv_.render();
         sfv_.render();
         pehv_.render();
+        clsv_.render();
+        scriptc_.render();
 
         autosave_tick();
 
@@ -216,6 +237,7 @@ void App::build_default_layout(ImGuiID dock_id) {
     ImGui::DockBuilderDockWindow("Strings", left);
     ImGui::DockBuilderDockWindow("Imports / Exports", left);
     ImGui::DockBuilderDockWindow("Types", left);
+    ImGui::DockBuilderDockWindow("Classes", left);
 
     ImGui::DockBuilderDockWindow("Disassembly", center);
     ImGui::DockBuilderDockWindow("Hex View", center);
@@ -230,6 +252,7 @@ void App::build_default_layout(ImGuiID dock_id) {
     ImGui::DockBuilderDockWindow("Entropy", bottom);
     ImGui::DockBuilderDockWindow("Diff View", bottom);
     ImGui::DockBuilderDockWindow("Stack Frame", bottom);
+    ImGui::DockBuilderDockWindow("Script Console", bottom);
 
     ImGui::DockBuilderFinish(dock_id);
 }
@@ -356,6 +379,7 @@ void App::render_menubar() {
             if (ImGui::MenuItem("PE Headers", nullptr, false, img_ != nullptr)) pehv_.visible_ = true;
             if (ImGui::MenuItem("Bookmarks", "Ctrl+M")) show_bookmarks_ = true;
             if (ImGui::MenuItem("Signatures", nullptr, false, analyzer_ != nullptr)) show_sigs_ = true;
+            if (ImGui::MenuItem("Script Console", nullptr, false, true)) {}
             ImGui::Separator();
             if (ImGui::BeginMenu("Theme")) {
                 if (ImGui::MenuItem("Binary Ninja", nullptr, g_theme == Theme::BinaryNinja)) {
@@ -483,9 +507,17 @@ void App::handle_keys() {
     if (io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) nav_back();
     if (io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_RightArrow)) nav_fwd();
 
-    // Tab = switch disasm/graph
     if (ImGui::IsKeyPressed(ImGuiKey_Tab) && !io.KeyCtrl)
         sync_panels(dv_.cursor());
+
+    if (ImGui::IsKeyPressed(ImGuiKey_F5)) {
+        va_t func = find_func_for(dv_.cursor());
+        if (func) {
+            pv_.show_function(func);
+            pv_.highlight_addr(dv_.cursor());
+            ImGui::SetWindowFocus("Pseudo Code");
+        }
+    }
 }
 
 void App::navigate_to(va_t addr) {
@@ -493,16 +525,10 @@ void App::navigate_to(va_t addr) {
 
     va_t target = addr;
 
-    // if address isn't in instruction map, find first code xref to it
     if (analyzer_ && !analyzer_->db().insns.count(addr)) {
         auto xit = analyzer_->db().xrefs_to.find(addr);
         if (xit != analyzer_->db().xrefs_to.end() && !xit->second.empty())
             target = xit->second[0].from;
-        else {
-            // no xref found and not an instruction - just update hex view
-            hv_.sync_to(addr);
-            return;
-        }
     }
 
     while ((int)hist_.size() > hist_pos_ + 1) hist_.pop_back();
@@ -670,7 +696,7 @@ void App::rebase(va_t new_base) {
     sp_.set_data(&db);
     xp_.set_data(&db);
     xp_.set_img(img_.get());
-    pv_.set_data(&db);
+    pv_.set_data(&db, analyzer_ ? &analyzer_->rtti_parser() : nullptr);
     ip_.set_data(img_.get());
     ip_.set_db(&db);
     hv_.set_data(img_.get());

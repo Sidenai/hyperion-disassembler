@@ -3,6 +3,7 @@
 #include "core/analysis/analyzer.h"
 #include "core/analysis/bindiff.h"
 #include "core/analysis/packer_detect.h"
+#include "core/analysis/pdb_loader.h"
 #include "core/database/database.h"
 #include "core/database/export/ida_export.h"
 #include "core/undo.h"
@@ -22,8 +23,11 @@
 #include "ui/widgets/callgraph_view.h"
 #include "ui/widgets/types_panel.h"
 #include "ui/widgets/diff_view.h"
+#include "ui/widgets/classes_view.h"
 #include "ui/widgets/stack_frame_view.h"
 #include "ui/widgets/pe_header_view.h"
+#include "ui/widgets/script_console.h"
+#include "scripting/lua_engine.h"
 #include <memory>
 #include <string>
 #include <deque>
@@ -95,6 +99,11 @@ private:
     DiffView         diffv_;
     StackFrameView   sfv_;
     PEHeaderView     pehv_;
+    ClassesView      clsv_;
+    ScriptConsole    scriptc_;
+
+    LuaEngine        lua_;
+    PDBLoader        pdb_;
 
     std::unique_ptr<PEImage>   diff_img_;
     std::unique_ptr<Analyzer>  diff_analyzer_;

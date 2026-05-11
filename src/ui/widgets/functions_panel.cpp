@@ -14,6 +14,13 @@ void FunctionsPanel::render() {
 
     ImGui::SameLine();
     ImGui::TextDisabled("(%d)", (int)db_->funcs.size());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Copy")) {
+        std::string out;
+        for (auto& [_, f] : db_->funcs)
+            out += fmt::format("{:016X}\t{}\n", f.entry, f.name);
+        ImGui::SetClipboardText(out.c_str());
+    }
     ImGui::Separator();
 
     std::string filt(filter_);

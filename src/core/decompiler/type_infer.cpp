@@ -1,6 +1,5 @@
 #include "type_infer.h"
 #include <fmt/format.h>
-#include <algorithm>
 
 namespace hype {
 
@@ -77,6 +76,9 @@ void TypeInfer::init_known_funcs() {
         {"CreateFileA",     void_ptr, {const_char_ptr, uint32, uint32, void_ptr, uint32, uint32, void_ptr},
                             {"lpFileName", "dwDesiredAccess", "dwShareMode", "lpSecurityAttributes",
                              "dwCreationDisposition", "dwFlagsAndAttributes", "hTemplateFile"}},
+        {"CreateFileW",     void_ptr, {DecompType::make_ptr(DecompType{DTypeKind::WChar}), uint32, uint32, void_ptr, uint32, uint32, void_ptr},
+                            {"lpFileName", "dwDesiredAccess", "dwShareMode", "lpSecurityAttributes",
+                             "dwCreationDisposition", "dwFlagsAndAttributes", "hTemplateFile"}},
         {"CloseHandle",     int32, {void_ptr}, {"hObject"}},
         {"ReadFile",        int32, {void_ptr, void_ptr, uint32, DecompType::make_ptr(uint32), void_ptr},
                             {"hFile", "lpBuffer", "nNumberOfBytesToRead", "lpNumberOfBytesRead", "lpOverlapped"}},
@@ -88,6 +90,21 @@ void TypeInfer::init_known_funcs() {
         {"GetLastError",    uint32, {}, {}},
         {"GetProcAddress",  void_ptr, {void_ptr, const_char_ptr}, {"hModule", "lpProcName"}},
         {"LoadLibraryA",    void_ptr, {const_char_ptr}, {"lpLibFileName"}},
+        {"_initterm",       DecompType::make_void(), {void_ptr, void_ptr}, {"first", "last"}},
+        {"_initterm_e",     int32, {void_ptr, void_ptr}, {"first", "last"}},
+        {"__p___argv",      DecompType::make_ptr(DecompType::make_ptr(char_ptr)), {}, {}},
+        {"__p___argc",      DecompType::make_ptr(int32), {}, {}},
+        {"exit",            DecompType::make_void(), {int32}, {"status"}},
+        {"_exit",           DecompType::make_void(), {int32}, {"status"}},
+        {"__acrt_iob_func", void_ptr, {uint32}, {"index"}},
+        {"_set_app_type",   DecompType::make_void(), {int32}, {"app_type"}},
+        {"__setusermatherr",DecompType::make_void(), {void_ptr}, {"handler"}},
+        {"_configure_narrow_argv", int32, {int32}, {"mode"}},
+        {"_initialize_narrow_environment", int32, {}, {}},
+        {"_get_initial_narrow_environment", DecompType::make_ptr(char_ptr), {}, {}},
+        {"_cexit",          DecompType::make_void(), {}, {}},
+        {"_c_exit",         DecompType::make_void(), {}, {}},
+        {"_register_onexit_function", int32, {void_ptr, void_ptr}, {"table", "func"}},
     };
 }
 
@@ -96,138 +113,99 @@ void TypeInfer::set_type(int var_id, DecompType t) {
     if (it == types_.end()) {
         types_[var_id] = std::move(t);
     } else {
-        if (it->second.kind == DTypeKind::Int64 && t.kind != DTypeKind::Int64) {
+        if (it->second.kind == DTypeKind::Int64 && t.kind != DTypeKind::Int64)
             it->second = std::move(t);
-        } else if (t.is_pointer() && !it->second.is_pointer()) {
+        else if (t.is_pointer() && !it->second.is_pointer())
             it->second = std::move(t);
-        }
     }
 }
 
-void TypeInfer::infer_from_sizes(const IRFunc& func) {
+void TypeInfer::infer_from_ops(const PcodeFunc& func) {
     for (auto& blk : func.blocks) {
-        for (auto& s : blk.stmts) {
-            if (!s.dst.valid()) continue;
-            if (s.dst.size == 4) set_type(s.dst.id, DecompType::make_int(32));
-            else if (s.dst.size == 2) set_type(s.dst.id, DecompType::make_int(16));
-            else if (s.dst.size == 1) set_type(s.dst.id, DecompType::make_int(8));
-        }
-    }
-}
+        for (auto& op : blk.ops) {
+            if (!op.output.valid()) continue;
+            int vid = op.output.id;
+            if (op.output.size == 4) set_type(vid, DecompType::make_int(32));
+            else if (op.output.size == 2) set_type(vid, DecompType::make_int(16));
+            else if (op.output.size == 1) set_type(vid, DecompType::make_int(8));
 
-void TypeInfer::infer_from_calls(const IRFunc& func) {
-    for (auto& blk : func.blocks) {
-        for (auto& s : blk.stmts) {
-            if (s.src.op != IROp::Call) continue;
-            if (!std::holds_alternative<std::string>(s.src.val)) continue;
-            auto& call_name = std::get<std::string>(s.src.val);
-
-            for (auto& kf : known_funcs_) {
-                if (call_name != kf.name) continue;
-
-                if (s.dst.valid())
-                    set_type(s.dst.id, kf.ret_type);
-
-                for (size_t i = 0; i < kf.param_types.size() && i < s.src.args.size(); ++i) {
-                    if (s.src.args[i].is_var()) {
-                        int pid = s.src.args[i].get_var().id;
-                        set_type(pid, kf.param_types[i]);
-                    }
-                }
-                break;
+            if (op.op == PcodeOp::LOAD && !op.inputs.empty()) {
+                if (op.inputs[0].is_reg())
+                    set_type(op.inputs[0].id, DecompType::make_ptr(get_type(vid)));
             }
         }
     }
 }
 
-void TypeInfer::infer_from_cmp(const IRFunc& func) {
+void TypeInfer::infer_from_calls(const PcodeFunc& func) {
     for (auto& blk : func.blocks) {
-        if (blk.cond.args.size() == 2) {
-            bool is_cmp = blk.cond.op == IROp::Eq || blk.cond.op == IROp::Ne;
-            if (is_cmp && blk.cond.args[1].is_imm() && blk.cond.args[1].get_imm() == 0) {
-                if (blk.cond.args[0].is_var()) {
-                    auto v = blk.cond.args[0].get_var();
-                    auto it = types_.find(v.id);
-                    if (it != types_.end() && it->second.is_pointer()) {
-                        // already typed as pointer, keep it
-                    }
-                }
+        for (auto& op : blk.ops) {
+            if (op.op != PcodeOp::CALL) continue;
+            if (op.inputs.empty()) continue;
+            auto& fn_vn = op.inputs[0];
+            if (fn_vn.name.empty()) continue;
+
+            auto* kf = find_known(fn_vn.name);
+            if (!kf) continue;
+
+            if (op.output.valid())
+                set_type(op.output.id, kf->ret_type);
+
+            for (size_t i = 0; i < kf->param_types.size() && (i + 1) < op.inputs.size(); ++i) {
+                auto& arg = op.inputs[i + 1];
+                if (arg.is_reg())
+                    set_type(arg.id, kf->param_types[i]);
             }
         }
     }
 }
 
-void TypeInfer::infer_from_usage(const IRFunc& func) {
+void TypeInfer::infer_params(const PcodeFunc& func) {
+    for (auto& p : func.params)
+        set_type(p.id, DecompType{DTypeKind::Int64});
+
     for (auto& blk : func.blocks) {
-        for (auto& s : blk.stmts) {
-            if (s.src.op == IROp::Load && !s.src.args.empty()) {
-                if (s.src.args[0].is_var()) {
-                    int addr_id = s.src.args[0].get_var().id;
-                    auto my_type = get_type(s.dst.id);
-                    set_type(addr_id, DecompType::make_ptr(my_type));
-                }
-            }
-            if (s.src.op == IROp::Assign && std::holds_alternative<std::string>(s.src.val)) {
-                if (s.dst.valid())
-                    set_type(s.dst.id, DecompType::make_ptr(DecompType::make_char(), true));
+        for (auto& op : blk.ops) {
+            if (op.op == PcodeOp::RETURN && !op.inputs.empty()) {
+                auto& rv = op.inputs[0];
+                if (rv.is_reg()) ret_type_ = get_type(rv.id);
             }
         }
     }
 }
 
-void TypeInfer::propagate(const IRFunc& func) {
-    for (int pass = 0; pass < 3; ++pass) {
-        for (auto& blk : func.blocks) {
-            for (auto& s : blk.stmts) {
-                if (s.op != IROp::Assign || !s.dst.valid()) continue;
-                if (s.src.is_var()) {
-                    int src_id = s.src.get_var().id;
-                    auto st = get_type(src_id);
-                    if (st.kind != DTypeKind::Int64) set_type(s.dst.id, st);
-                    auto dt = get_type(s.dst.id);
-                    if (dt.kind != DTypeKind::Int64) set_type(src_id, dt);
-                }
-            }
+void TypeInfer::name_variables(const PcodeFunc& func) {
+    for (auto& blk : func.blocks) {
+        for (auto& op : blk.ops) {
+            if (op.op != PcodeOp::CALL) continue;
+            if (op.inputs.empty()) continue;
+            auto& fn_vn = op.inputs[0];
+            if (!op.output.valid()) continue;
+
+            if (fn_vn.name == "strlen" || fn_vn.name == "wcslen")
+                names_[op.output.id] = "len";
+            else if (fn_vn.name == "malloc" || fn_vn.name == "calloc" || fn_vn.name == "VirtualAlloc")
+                names_[op.output.id] = "buf";
+            else if (fn_vn.name == "GetProcAddress")
+                names_[op.output.id] = "proc";
+            else if (fn_vn.name == "LoadLibraryA" || fn_vn.name == "LoadLibraryW")
+                names_[op.output.id] = "hModule";
+            else if (fn_vn.name == "CreateFileA" || fn_vn.name == "CreateFileW")
+                names_[op.output.id] = "hFile";
+            else if (fn_vn.name == "GetLastError")
+                names_[op.output.id] = "err";
+            else if (fn_vn.name == "__p___argv")
+                names_[op.output.id] = "argv";
+            else if (fn_vn.name == "__p___argc")
+                names_[op.output.id] = "argc";
         }
     }
 }
 
-void TypeInfer::name_variables(const IRFunc& func) {
-    for (auto& blk : func.blocks) {
-        for (auto& s : blk.stmts) {
-            if (s.src.op == IROp::Call && s.dst.valid()) {
-                if (!std::holds_alternative<std::string>(s.src.val)) continue;
-                auto& call_name = std::get<std::string>(s.src.val);
-                if (call_name == "strlen" || call_name == "wcslen")
-                    names_[s.dst.id] = "len";
-                else if (call_name == "malloc" || call_name == "calloc" || call_name == "VirtualAlloc")
-                    names_[s.dst.id] = "buf";
-                else if (call_name == "GetProcAddress")
-                    names_[s.dst.id] = "proc";
-                else if (call_name == "LoadLibraryA" || call_name == "LoadLibraryW")
-                    names_[s.dst.id] = "hModule";
-                else if (call_name == "CreateFileA" || call_name == "CreateFileW")
-                    names_[s.dst.id] = "hFile";
-                else if (call_name == "GetLastError")
-                    names_[s.dst.id] = "err";
-            }
-        }
-    }
-
-    // detect loop counters
-    for (auto& blk : func.blocks) {
-        for (auto& s : blk.stmts) {
-            if (s.op == IROp::Assign && s.dst.valid() && s.src.op == IROp::Add
-                && s.src.args.size() == 2 && s.src.args[0].is_var()
-                && s.src.args[0].get_var().id == s.dst.id
-                && s.src.args[1].is_imm() && s.src.args[1].get_imm() == 1) {
-                if (names_.find(s.dst.id) == names_.end())
-                    names_[s.dst.id] = "i";
-            }
-        }
-    }
-
-    (void)func;
+const KnownFunc* TypeInfer::find_known(const std::string& name) const {
+    for (auto& kf : known_funcs_)
+        if (kf.name == name) return &kf;
+    return nullptr;
 }
 
 DecompType TypeInfer::get_type(int var_id) const {
@@ -242,39 +220,55 @@ std::string TypeInfer::get_var_name(int var_id) const {
     return {};
 }
 
-void TypeInfer::run(IRFunc& func) {
+void TypeInfer::run(PcodeFunc& func) {
+    types_.clear();
+    names_.clear();
+    ret_type_ = DecompType{DTypeKind::Int64};
+
     init_known_funcs();
-
-    for (auto& p : func.params)
-        set_type(p.id, DecompType{DTypeKind::Int64});
-
-    infer_from_sizes(func);
+    infer_params(func);
+    infer_from_ops(func);
     infer_from_calls(func);
-    infer_from_cmp(func);
-    infer_from_usage(func);
-    propagate(func);
-
-    // determine return type
-    for (auto& blk : func.blocks) {
-        for (auto& s : blk.stmts) {
-            if (s.op == IROp::Ret && s.src.is_var()) {
-                ret_type_ = get_type(s.src.get_var().id);
-            }
-        }
-    }
-
-    // propagate call return types to ret_type if function contains relevant calls
-    for (auto& blk : func.blocks) {
-        for (auto& s : blk.stmts) {
-            if (s.src.op == IROp::Call && s.dst.valid() && s.dst.id == 0) {
-                auto t = get_type(s.dst.id);
-                if (t.kind != DTypeKind::Int64 && ret_type_.kind == DTypeKind::Int64)
-                    ret_type_ = t;
-            }
-        }
-    }
-
     name_variables(func);
+}
+
+TypeInfer::StlKind TypeInfer::detect_stl_container(int /*var_id*/, u32 struct_size,
+    const std::vector<std::pair<i64,u32>>& accesses) const {
+    // std::unique_ptr<T>: 8 bytes, single pointer field at +0
+    if (struct_size == 8) {
+        for (auto& [off, sz] : accesses)
+            if (off == 0 && sz == 8) return StlKind::UniquePtr;
+    }
+    // std::shared_ptr<T>: 16 bytes, {ptr, ctrl} at +0, +8
+    if (struct_size == 16) {
+        bool has_0 = false, has_8 = false;
+        for (auto& [off, sz] : accesses) {
+            if (off == 0 && sz == 8) has_0 = true;
+            if (off == 8 && sz == 8) has_8 = true;
+        }
+        if (has_0 && has_8) return StlKind::SharedPtr;
+    }
+    // std::vector<T>: 24 bytes, {begin, end, cap} at +0, +8, +16
+    if (struct_size == 24 || (struct_size >= 20 && struct_size <= 24)) {
+        bool has_0 = false, has_8 = false, has_16 = false;
+        for (auto& [off, sz] : accesses) {
+            if (off == 0 && sz == 8) has_0 = true;
+            if (off == 8 && sz == 8) has_8 = true;
+            if (off == 16 && sz == 8) has_16 = true;
+        }
+        if (has_0 && has_8 && has_16) return StlKind::Vector;
+    }
+    // std::string (MSVC): 32 bytes, {buf/ptr union, size, capacity} at +0, +16, +24
+    if (struct_size == 32 || (struct_size >= 28 && struct_size <= 40)) {
+        bool has_0 = false, has_16 = false, has_24 = false;
+        for (auto& [off, sz] : accesses) {
+            if (off == 0) has_0 = true;
+            if (off == 16 && sz == 8) has_16 = true;
+            if (off == 24 && sz == 8) has_24 = true;
+        }
+        if (has_0 && has_16 && has_24) return StlKind::String;
+    }
+    return StlKind::None;
 }
 
 }

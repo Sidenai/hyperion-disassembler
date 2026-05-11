@@ -126,6 +126,7 @@ bool Database::load(const fs::path& dir, PEImage& img, AnalysisDB& db) {
         img.arch = static_cast<Arch>(arch);
         f.read(reinterpret_cast<char*>(&img.base), 8);
         f.read(reinterpret_cast<char*>(&img.entry), 8);
+        db.image_base = img.base;
     }
 
     {
