@@ -1,356 +1,451 @@
 #include "lifter.h"
 #include <Zydis/Zydis.h>
 #include <fmt/format.h>
+#include <algorithm>
 
 namespace hype {
 
+static constexpr int REG_RAX = 0, REG_RCX = 1, REG_RDX = 2, REG_RBX = 3;
+static constexpr int REG_RSP = 4, REG_RBP = 5, REG_RSI = 6, REG_RDI = 7;
+static constexpr int REG_R8 = 8, REG_R9 = 9, REG_R10 = 10, REG_R11 = 11;
+static constexpr int REG_R12 = 12, REG_R13 = 13, REG_R14 = 14, REG_R15 = 15;
+static constexpr int REG_ZF = 100, REG_CF = 101, REG_SF = 102, REG_OF = 103;
+
 static const struct { u16 zreg; const char* name; int id; int size; } kRegTable[] = {
-    {ZYDIS_REGISTER_RAX, "rax", 0, 8}, {ZYDIS_REGISTER_EAX, "eax", 0, 4}, {ZYDIS_REGISTER_AX, "ax", 0, 2}, {ZYDIS_REGISTER_AL, "al", 0, 1},
-    {ZYDIS_REGISTER_RCX, "rcx", 1, 8}, {ZYDIS_REGISTER_ECX, "ecx", 1, 4}, {ZYDIS_REGISTER_CX, "cx", 1, 2}, {ZYDIS_REGISTER_CL, "cl", 1, 1},
-    {ZYDIS_REGISTER_RDX, "rdx", 2, 8}, {ZYDIS_REGISTER_EDX, "edx", 2, 4}, {ZYDIS_REGISTER_DX, "dx", 2, 2}, {ZYDIS_REGISTER_DL, "dl", 2, 1},
-    {ZYDIS_REGISTER_RBX, "rbx", 3, 8}, {ZYDIS_REGISTER_EBX, "ebx", 3, 4}, {ZYDIS_REGISTER_BX, "bx", 3, 2}, {ZYDIS_REGISTER_BL, "bl", 3, 1},
-    {ZYDIS_REGISTER_RSP, "rsp", 4, 8}, {ZYDIS_REGISTER_ESP, "esp", 4, 4},
-    {ZYDIS_REGISTER_RBP, "rbp", 5, 8}, {ZYDIS_REGISTER_EBP, "ebp", 5, 4},
-    {ZYDIS_REGISTER_RSI, "rsi", 6, 8}, {ZYDIS_REGISTER_ESI, "esi", 6, 4},
-    {ZYDIS_REGISTER_RDI, "rdi", 7, 8}, {ZYDIS_REGISTER_EDI, "edi", 7, 4},
-    {ZYDIS_REGISTER_R8,  "r8",  8, 8}, {ZYDIS_REGISTER_R8D, "r8d", 8, 4},
-    {ZYDIS_REGISTER_R9,  "r9",  9, 8}, {ZYDIS_REGISTER_R9D, "r9d", 9, 4},
-    {ZYDIS_REGISTER_R10, "r10", 10, 8},{ZYDIS_REGISTER_R10D,"r10d",10, 4},
-    {ZYDIS_REGISTER_R11, "r11", 11, 8},{ZYDIS_REGISTER_R11D,"r11d",11, 4},
-    {ZYDIS_REGISTER_R12, "r12", 12, 8},{ZYDIS_REGISTER_R12D,"r12d",12, 4},
-    {ZYDIS_REGISTER_R13, "r13", 13, 8},{ZYDIS_REGISTER_R13D,"r13d",13, 4},
-    {ZYDIS_REGISTER_R14, "r14", 14, 8},{ZYDIS_REGISTER_R14D,"r14d",14, 4},
-    {ZYDIS_REGISTER_R15, "r15", 15, 8},{ZYDIS_REGISTER_R15D,"r15d",15, 4},
+    {ZYDIS_REGISTER_RAX,"rax",0,8},{ZYDIS_REGISTER_EAX,"eax",0,4},{ZYDIS_REGISTER_AX,"ax",0,2},{ZYDIS_REGISTER_AL,"al",0,1},
+    {ZYDIS_REGISTER_RCX,"rcx",1,8},{ZYDIS_REGISTER_ECX,"ecx",1,4},{ZYDIS_REGISTER_CX,"cx",1,2},{ZYDIS_REGISTER_CL,"cl",1,1},
+    {ZYDIS_REGISTER_RDX,"rdx",2,8},{ZYDIS_REGISTER_EDX,"edx",2,4},{ZYDIS_REGISTER_DX,"dx",2,2},{ZYDIS_REGISTER_DL,"dl",2,1},
+    {ZYDIS_REGISTER_RBX,"rbx",3,8},{ZYDIS_REGISTER_EBX,"ebx",3,4},{ZYDIS_REGISTER_BX,"bx",3,2},{ZYDIS_REGISTER_BL,"bl",3,1},
+    {ZYDIS_REGISTER_RSP,"rsp",4,8},{ZYDIS_REGISTER_ESP,"esp",4,4},
+    {ZYDIS_REGISTER_RBP,"rbp",5,8},{ZYDIS_REGISTER_EBP,"ebp",5,4},
+    {ZYDIS_REGISTER_RSI,"rsi",6,8},{ZYDIS_REGISTER_ESI,"esi",6,4},{ZYDIS_REGISTER_SIL,"sil",6,1},
+    {ZYDIS_REGISTER_RDI,"rdi",7,8},{ZYDIS_REGISTER_EDI,"edi",7,4},{ZYDIS_REGISTER_DIL,"dil",7,1},
+    {ZYDIS_REGISTER_R8,"r8",8,8},{ZYDIS_REGISTER_R8D,"r8d",8,4},{ZYDIS_REGISTER_R8W,"r8w",8,2},{ZYDIS_REGISTER_R8B,"r8b",8,1},
+    {ZYDIS_REGISTER_R9,"r9",9,8},{ZYDIS_REGISTER_R9D,"r9d",9,4},{ZYDIS_REGISTER_R9W,"r9w",9,2},{ZYDIS_REGISTER_R9B,"r9b",9,1},
+    {ZYDIS_REGISTER_R10,"r10",10,8},{ZYDIS_REGISTER_R10D,"r10d",10,4},
+    {ZYDIS_REGISTER_R11,"r11",11,8},{ZYDIS_REGISTER_R11D,"r11d",11,4},
+    {ZYDIS_REGISTER_R12,"r12",12,8},{ZYDIS_REGISTER_R12D,"r12d",12,4},
+    {ZYDIS_REGISTER_R13,"r13",13,8},{ZYDIS_REGISTER_R13D,"r13d",13,4},
+    {ZYDIS_REGISTER_R14,"r14",14,8},{ZYDIS_REGISTER_R14D,"r14d",14,4},
+    {ZYDIS_REGISTER_R15,"r15",15,8},{ZYDIS_REGISTER_R15D,"r15d",15,4},
 };
 
-IRVar Lifter::reg_var(u16 reg, u16 size) {
-    for (auto& r : kRegTable) {
-        if (r.zreg == reg)
-            return IRVar{r.id, r.name, r.size};
-    }
-    IRVar v;
-    v.id = 50 + (reg % 50);
-    v.name = fmt::format("reg{}", reg);
-    v.size = size / 8;
-    return v;
+Varnode Lifter::reg_vn(u16 zreg, u16 bits) {
+    for (auto& r : kRegTable)
+        if (r.zreg == zreg) return vn_reg(r.id, r.name, r.size);
+    int id = 50 + (zreg % 50);
+    return vn_reg(id, "unk", bits / 8);
 }
 
-IRVar Lifter::alloc_tmp() {
-    IRVar v;
-    v.id = next_var_;
-    v.name = fmt::format("t{}", next_var_);
-    v.size = 8;
-    ++next_var_;
-    return v;
+Varnode Lifter::alloc_temp(int sz) {
+    return vn_temp(next_temp_++, sz);
 }
 
-IRExpr Lifter::mem_expr(const Operand& op) {
-    IRExpr result = IRExpr::imm(0);
-    bool has = false;
-
-    if (op.mem.base && op.mem.base != ZYDIS_REGISTER_NONE) {
-        result = IRExpr::var(reg_var(op.mem.base, 64));
-        has = true;
-    }
-
-    if (op.mem.index && op.mem.index != ZYDIS_REGISTER_NONE) {
-        IRExpr idx = IRExpr::var(reg_var(op.mem.index, 64));
-        if (op.mem.scale > 1)
-            idx = IRExpr::binop(IROp::Mul, idx, IRExpr::imm(op.mem.scale));
-        result = has ? IRExpr::binop(IROp::Add, result, idx) : idx;
-        has = true;
-    }
-
-    if (op.mem.disp != 0) {
-        IRExpr d = IRExpr::imm(static_cast<u64>(op.mem.disp));
-        result = has ? IRExpr::binop(IROp::Add, result, d) : d;
-    } else if (!has) {
-        result = IRExpr::imm(0);
-    }
-
-    return result;
+void Lifter::emit(PcodeBlock& b, PcodeOp op, Varnode out, std::vector<Varnode> in, va_t a) {
+    PcodeInsn p;
+    p.op = op;
+    p.output = out;
+    p.inputs = std::move(in);
+    p.addr = a ? a : cur_addr_;
+    p.seq = cur_seq_++;
+    b.ops.push_back(std::move(p));
 }
 
-IRExpr Lifter::operand_expr(const Insn& insn, int idx, const AnalysisDB& db) {
-    if (idx >= insn.op_count) return IRExpr::imm(0);
+
+Varnode Lifter::operand_read(const Insn& insn, int idx, const AnalysisDB& /*db*/, PcodeBlock& out) {
+    if (idx >= insn.op_count) return vn_const(0);
     auto& op = insn.ops[idx];
     switch (op.type) {
     case OpType::Reg:
-        return IRExpr::var(reg_var(op.reg, op.size));
-    case OpType::Imm: {
-        for (auto& [saddr, sval] : db.strings) {
-            if (saddr == op.val)
-                return IRExpr::str(sval.substr(0, 60));
-        }
-        return IRExpr::imm(op.val);
-    }
+        return reg_vn(op.reg, op.size);
+    case OpType::Imm:
+        return vn_const(op.val, op.size / 8 ? op.size / 8 : 8);
     case OpType::Mem: {
-        if (op.val) {
-            for (auto& [saddr, sval] : db.strings) {
-                if (saddr == op.val)
-                    return IRExpr::str(sval.substr(0, 60));
-            }
+        if (op.val != 0 && op.mem.base != ZYDIS_REGISTER_NONE &&
+            (op.mem.base == ZYDIS_REGISTER_RIP || op.mem.base == ZYDIS_REGISTER_EIP)) {
+            Varnode addr = vn_const(op.val);
+            int sz = op.size / 8;
+            if (sz < 1) sz = 8;
+            Varnode result = alloc_temp(sz);
+            emit(out, PcodeOp::LOAD, result, {addr});
+            return result;
         }
-        IRExpr addr = mem_expr(op);
-        return IRExpr::load(std::move(addr), op.size / 8);
+
+        Varnode addr = vn_const(0);
+        bool has = false;
+
+        if (op.mem.base && op.mem.base != ZYDIS_REGISTER_NONE) {
+            addr = reg_vn(op.mem.base, 64);
+            has = true;
+        }
+
+        if (op.mem.index && op.mem.index != ZYDIS_REGISTER_NONE) {
+            Varnode idx_r = reg_vn(op.mem.index, 64);
+            if (op.mem.scale > 1) {
+                Varnode t = alloc_temp();
+                emit(out, PcodeOp::INT_MULT, t, {idx_r, vn_const(op.mem.scale)});
+                idx_r = t;
+            }
+            if (has) {
+                Varnode t = alloc_temp();
+                emit(out, PcodeOp::ADD, t, {addr, idx_r});
+                addr = t;
+            } else {
+                addr = idx_r;
+            }
+            has = true;
+        }
+
+        if (op.mem.disp != 0) {
+            Varnode d = vn_const(static_cast<u64>(op.mem.disp));
+            if (has) {
+                Varnode t = alloc_temp();
+                emit(out, PcodeOp::ADD, t, {addr, d});
+                addr = t;
+            } else {
+                addr = d;
+            }
+            has = true;
+        }
+
+        if (!has) addr = vn_const(0);
+
+        int sz = op.size / 8;
+        if (sz < 1) sz = 8;
+        Varnode result = alloc_temp(sz);
+        emit(out, PcodeOp::LOAD, result, {addr});
+        return result;
     }
     default:
-        return IRExpr::imm(0);
+        return vn_const(0);
     }
 }
 
-static IROp jcc_to_cmp(u16 mnemonic_id) {
+void Lifter::operand_write(const Insn& insn, int idx, Varnode val, PcodeBlock& out) {
+    if (idx >= insn.op_count) return;
+    auto& op = insn.ops[idx];
+    if (op.type == OpType::Reg) {
+        Varnode dst = reg_vn(op.reg, op.size);
+        emit(out, PcodeOp::COPY, dst, {val});
+    } else if (op.type == OpType::Mem) {
+        Varnode addr = vn_const(0);
+        bool has = false;
+        if (op.mem.base && op.mem.base != ZYDIS_REGISTER_NONE) {
+            addr = reg_vn(op.mem.base, 64);
+            has = true;
+        }
+        if (op.mem.index && op.mem.index != ZYDIS_REGISTER_NONE) {
+            Varnode idx_r = reg_vn(op.mem.index, 64);
+            if (op.mem.scale > 1) {
+                Varnode t = alloc_temp();
+                emit(out, PcodeOp::INT_MULT, t, {idx_r, vn_const(op.mem.scale)});
+                idx_r = t;
+            }
+            if (has) {
+                Varnode t = alloc_temp();
+                emit(out, PcodeOp::ADD, t, {addr, idx_r});
+                addr = t;
+            } else { addr = idx_r; }
+            has = true;
+        }
+        if (op.mem.disp != 0) {
+            Varnode d = vn_const(static_cast<u64>(op.mem.disp));
+            if (has) {
+                Varnode t = alloc_temp();
+                emit(out, PcodeOp::ADD, t, {addr, d});
+                addr = t;
+            } else { addr = d; }
+        }
+        emit(out, PcodeOp::STORE, {}, {addr, val});
+    }
+}
+
+void Lifter::emit_flags(const Insn& /*insn*/, Varnode lhs, Varnode rhs, PcodeBlock& out, bool is_test) {
+    Varnode zf = vn_reg(REG_ZF, "ZF", 1);
+    Varnode cf = vn_reg(REG_CF, "CF", 1);
+    Varnode sf = vn_reg(REG_SF, "SF", 1);
+    Varnode of_v = vn_reg(REG_OF, "OF", 1);
+
+    if (is_test) {
+        Varnode tmp = alloc_temp(lhs.size);
+        emit(out, PcodeOp::AND, tmp, {lhs, rhs});
+        emit(out, PcodeOp::INT_EQUAL, zf, {tmp, vn_const(0, lhs.size)});
+        emit(out, PcodeOp::INT_SLESS, sf, {tmp, vn_const(0, lhs.size)});
+        emit(out, PcodeOp::COPY, cf, {vn_const(0, 1)});
+        emit(out, PcodeOp::COPY, of_v, {vn_const(0, 1)});
+    } else {
+        Varnode diff = alloc_temp(lhs.size);
+        emit(out, PcodeOp::SUB, diff, {lhs, rhs});
+        emit(out, PcodeOp::INT_EQUAL, zf, {diff, vn_const(0, lhs.size)});
+        emit(out, PcodeOp::INT_SLESS, sf, {diff, vn_const(0, lhs.size)});
+        emit(out, PcodeOp::INT_LESS, cf, {lhs, rhs});
+        // simplified overflow
+        emit(out, PcodeOp::COPY, of_v, {vn_const(0, 1)});
+    }
+}
+
+static PcodeOp jcc_to_flag_op(u16 mnemonic_id, int& flag_reg, bool& negate) {
+    negate = false;
+    flag_reg = REG_ZF;
     switch (mnemonic_id) {
-    case ZYDIS_MNEMONIC_JZ:  return IROp::Eq;
-    case ZYDIS_MNEMONIC_JNZ: return IROp::Ne;
-    case ZYDIS_MNEMONIC_JL:  return IROp::SignedLt;
-    case ZYDIS_MNEMONIC_JLE: return IROp::SignedLe;
-    case ZYDIS_MNEMONIC_JNL: return IROp::SignedGe;
-    case ZYDIS_MNEMONIC_JNLE:return IROp::SignedGt;
-    case ZYDIS_MNEMONIC_JB:  return IROp::Lt;
-    case ZYDIS_MNEMONIC_JBE: return IROp::Le;
-    case ZYDIS_MNEMONIC_JNB: return IROp::Ge;
-    case ZYDIS_MNEMONIC_JNBE:return IROp::Gt;
-    default: return IROp::Ne;
+    case ZYDIS_MNEMONIC_JZ:   flag_reg = REG_ZF; negate = false; return PcodeOp::NOP;
+    case ZYDIS_MNEMONIC_JNZ:  flag_reg = REG_ZF; negate = true;  return PcodeOp::NOP;
+    case ZYDIS_MNEMONIC_JB:   flag_reg = REG_CF; negate = false; return PcodeOp::NOP;
+    case ZYDIS_MNEMONIC_JNB:  flag_reg = REG_CF; negate = true;  return PcodeOp::NOP;
+    case ZYDIS_MNEMONIC_JL:   flag_reg = REG_SF; negate = false; return PcodeOp::NOP;
+    case ZYDIS_MNEMONIC_JNL:  flag_reg = REG_SF; negate = true;  return PcodeOp::NOP;
+    case ZYDIS_MNEMONIC_JLE:  flag_reg = REG_ZF; negate = false; return PcodeOp::NOP; // zf || sf
+    case ZYDIS_MNEMONIC_JNLE: flag_reg = REG_ZF; negate = true;  return PcodeOp::NOP;
+    case ZYDIS_MNEMONIC_JBE:  flag_reg = REG_ZF; negate = false; return PcodeOp::NOP; // cf || zf
+    case ZYDIS_MNEMONIC_JNBE: flag_reg = REG_ZF; negate = true;  return PcodeOp::NOP;
+    default: flag_reg = REG_ZF; negate = true; return PcodeOp::NOP;
     }
 }
 
-void Lifter::lift_insn(const Insn& insn, const AnalysisDB& db, IRBlock& out) {
-    auto stmt = [&](IROp op, IRVar dst, IRExpr src) {
-        out.stmts.push_back({op, dst, std::move(src), insn.addr});
-    };
+void Lifter::lift_insn(const Insn& insn, const AnalysisDB& db, PcodeBlock& out) {
+    cur_addr_ = insn.addr;
+    cur_seq_ = 0;
+
+    auto rsp = vn_reg(REG_RSP, "rsp", 8);
 
     switch (insn.type) {
     case InsnType::Mov: {
-        auto& dst_op = insn.ops[0];
-        IRExpr src = operand_expr(insn, 1, db);
-        if (dst_op.type == OpType::Reg) {
-            stmt(IROp::Assign, reg_var(dst_op.reg, dst_op.size), std::move(src));
-        } else if (dst_op.type == OpType::Mem) {
-            IRExpr addr = mem_expr(dst_op);
-            IRExpr store_expr;
-            store_expr.op = IROp::Store;
-            store_expr.args = {std::move(addr), std::move(src)};
-            store_expr.val = (u64)(dst_op.size / 8);
-            auto tmp = alloc_tmp();
-            stmt(IROp::Store, tmp, std::move(store_expr));
-        }
+        Varnode src = operand_read(insn, 1, db, out);
+        operand_write(insn, 0, src, out);
         break;
     }
     case InsnType::Lea: {
         auto& dst_op = insn.ops[0];
-        if (dst_op.type == OpType::Reg) {
-            auto& src_op = insn.ops[1];
-            IRExpr addr = mem_expr(src_op);
-            stmt(IROp::Assign, reg_var(dst_op.reg, dst_op.size), std::move(addr));
+        auto& src_op = insn.ops[1];
+        if (dst_op.type == OpType::Reg && src_op.type == OpType::Mem) {
+            if (src_op.val != 0 && src_op.mem.base != ZYDIS_REGISTER_NONE &&
+                (src_op.mem.base == ZYDIS_REGISTER_RIP || src_op.mem.base == ZYDIS_REGISTER_EIP)) {
+                emit(out, PcodeOp::COPY, reg_vn(dst_op.reg, dst_op.size), {vn_const(src_op.val)});
+                break;
+            }
+            Varnode addr = vn_const(0);
+            bool has = false;
+            if (src_op.mem.base && src_op.mem.base != ZYDIS_REGISTER_NONE) {
+                addr = reg_vn(src_op.mem.base, 64);
+                has = true;
+            }
+            if (src_op.mem.index && src_op.mem.index != ZYDIS_REGISTER_NONE) {
+                Varnode idx_r = reg_vn(src_op.mem.index, 64);
+                if (src_op.mem.scale > 1) {
+                    Varnode t = alloc_temp();
+                    emit(out, PcodeOp::INT_MULT, t, {idx_r, vn_const(src_op.mem.scale)});
+                    idx_r = t;
+                }
+                if (has) {
+                    Varnode t = alloc_temp();
+                    emit(out, PcodeOp::ADD, t, {addr, idx_r});
+                    addr = t;
+                } else { addr = idx_r; }
+                has = true;
+            }
+            if (src_op.mem.disp != 0) {
+                Varnode d = vn_const(static_cast<u64>(src_op.mem.disp));
+                if (has) {
+                    Varnode t = alloc_temp();
+                    emit(out, PcodeOp::ADD, t, {addr, d});
+                    addr = t;
+                } else { addr = d; }
+            }
+            emit(out, PcodeOp::COPY, reg_vn(dst_op.reg, dst_op.size), {addr});
         }
         break;
     }
-    case InsnType::Add:
-    case InsnType::Sub:
-    case InsnType::And:
-    case InsnType::Or:
-    case InsnType::Xor:
-    case InsnType::Shl:
-    case InsnType::Shr: {
+    case InsnType::Add: case InsnType::Sub:
+    case InsnType::And: case InsnType::Or: case InsnType::Xor:
+    case InsnType::Shl: case InsnType::Shr: {
         auto& dst_op = insn.ops[0];
-        if (dst_op.type == OpType::Reg) {
-            IRVar dv = reg_var(dst_op.reg, dst_op.size);
-            IRExpr src = operand_expr(insn, 1, db);
-            IROp op = IROp::Add;
-            switch (insn.type) {
-            case InsnType::Add: op = IROp::Add; break;
-            case InsnType::Sub: op = IROp::Sub; break;
-            case InsnType::And: op = IROp::And; break;
-            case InsnType::Or:  op = IROp::Or;  break;
-            case InsnType::Xor: op = IROp::Xor; break;
-            case InsnType::Shl: op = IROp::Shl; break;
-            case InsnType::Shr: op = IROp::Shr; break;
-            default: break;
-            }
-            if (insn.type == InsnType::Xor && insn.op_count >= 2 &&
-                insn.ops[0].type == OpType::Reg && insn.ops[1].type == OpType::Reg &&
-                insn.ops[0].reg == insn.ops[1].reg) {
-                stmt(IROp::Assign, dv, IRExpr::imm(0));
-            } else {
-                stmt(IROp::Assign, dv, IRExpr::binop(op, IRExpr::var(dv), std::move(src)));
-            }
+        Varnode lhs = operand_read(insn, 0, db, out);
+        Varnode rhs = operand_read(insn, 1, db, out);
+
+        if (insn.type == InsnType::Xor && insn.op_count >= 2 &&
+            insn.ops[0].type == OpType::Reg && insn.ops[1].type == OpType::Reg &&
+            insn.ops[0].reg == insn.ops[1].reg) {
+            operand_write(insn, 0, vn_const(0, dst_op.size / 8), out);
+            break;
         }
+
+        PcodeOp pop = PcodeOp::ADD;
+        switch (insn.type) {
+        case InsnType::Add: pop = PcodeOp::ADD; break;
+        case InsnType::Sub: pop = PcodeOp::SUB; break;
+        case InsnType::And: pop = PcodeOp::AND; break;
+        case InsnType::Or:  pop = PcodeOp::OR;  break;
+        case InsnType::Xor: pop = PcodeOp::XOR; break;
+        case InsnType::Shl: pop = PcodeOp::SHIFT_LEFT; break;
+        case InsnType::Shr: pop = PcodeOp::SHIFT_RIGHT; break;
+        default: break;
+        }
+        Varnode result = alloc_temp(lhs.size);
+        emit(out, pop, result, {lhs, rhs});
+        operand_write(insn, 0, result, out);
         break;
     }
     case InsnType::Mul: {
-        IRVar rax{0, "rax", 8};
-        IRExpr src = operand_expr(insn, insn.op_count > 1 ? 1 : 0, db);
-        stmt(IROp::Assign, rax, IRExpr::binop(IROp::Mul, IRExpr::var(rax), std::move(src)));
+        auto rax_v = vn_reg(REG_RAX, "rax", 8);
+        Varnode src = operand_read(insn, insn.op_count > 1 ? 1 : 0, db, out);
+        Varnode result = alloc_temp();
+        emit(out, PcodeOp::INT_MULT, result, {rax_v, src});
+        emit(out, PcodeOp::COPY, rax_v, {result});
+        break;
+    }
+    case InsnType::Div: {
+        auto rax_v = vn_reg(REG_RAX, "rax", 8);
+        Varnode src = operand_read(insn, insn.op_count > 1 ? 1 : 0, db, out);
+        Varnode result = alloc_temp();
+        emit(out, PcodeOp::INT_DIV, result, {rax_v, src});
+        emit(out, PcodeOp::COPY, rax_v, {result});
         break;
     }
     case InsnType::Not: {
-        auto& dst_op = insn.ops[0];
-        if (dst_op.type == OpType::Reg) {
-            IRVar dv = reg_var(dst_op.reg, dst_op.size);
-            stmt(IROp::Assign, dv, IRExpr::unop(IROp::Not, IRExpr::var(dv)));
-        }
+        Varnode src = operand_read(insn, 0, db, out);
+        Varnode result = alloc_temp(src.size);
+        emit(out, PcodeOp::INT_NEGATE, result, {src});
+        operand_write(insn, 0, result, out);
         break;
     }
+    case InsnType::Push: {
+        Varnode src = operand_read(insn, 0, db, out);
+        Varnode new_sp = alloc_temp();
+        emit(out, PcodeOp::SUB, new_sp, {rsp, vn_const(8)});
+        emit(out, PcodeOp::COPY, rsp, {new_sp});
+        emit(out, PcodeOp::STORE, {}, {rsp, src});
+        break;
+    }
+    case InsnType::Pop: {
+        Varnode loaded = alloc_temp();
+        emit(out, PcodeOp::LOAD, loaded, {rsp});
+        operand_write(insn, 0, loaded, out);
+        Varnode new_sp = alloc_temp();
+        emit(out, PcodeOp::ADD, new_sp, {rsp, vn_const(8)});
+        emit(out, PcodeOp::COPY, rsp, {new_sp});
+        break;
+    }
+    case InsnType::Cmp: {
+        Varnode lhs = operand_read(insn, 0, db, out);
+        Varnode rhs = operand_read(insn, 1, db, out);
+        emit_flags(insn, lhs, rhs, out, false);
+        break;
+    }
+    case InsnType::Test: {
+        Varnode lhs = operand_read(insn, 0, db, out);
+        Varnode rhs = operand_read(insn, 1, db, out);
+        emit_flags(insn, lhs, rhs, out, true);
+        break;
+    }
+    case InsnType::Jcc: {
+        int flag_reg; bool negate;
+        jcc_to_flag_op(insn.mnemonic_id, flag_reg, negate);
+        Varnode flag = vn_reg(flag_reg, flag_reg == REG_ZF ? "ZF" :
+                              flag_reg == REG_CF ? "CF" :
+                              flag_reg == REG_SF ? "SF" : "OF", 1);
+        Varnode cond_val = flag;
+        if (negate) {
+            cond_val = alloc_temp(1);
+            emit(out, PcodeOp::BOOL_NOT, cond_val, {flag});
+        }
+        va_t target = insn.branch_target();
+        emit(out, PcodeOp::CBRANCH, {}, {vn_const(target), cond_val});
+        break;
+    }
+    case InsnType::Jmp:
+        emit(out, PcodeOp::BRANCH, {}, {vn_const(insn.branch_target())});
+        break;
     case InsnType::Call: {
         va_t target = insn.branch_target();
         std::string name;
         if (target) {
             auto nit = db.names.find(target);
-            name = (nit != db.names.end()) ? nit->second : fmt::format("sub_{:X}", target);
+            if (nit != db.names.end())
+                name = nit->second;
+            else if (db.image_base && target >= db.image_base)
+                name = fmt::format("sub_{:X}", target - db.image_base);
+            else
+                name = fmt::format("sub_{:X}", target);
         } else {
             name = fmt::format("indirect_{:X}", insn.addr);
         }
-        IRVar rcx{1, "rcx", 8}, rdx{2, "rdx", 8}, r8{8, "r8", 8}, r9{9, "r9", 8};
-        std::vector<IRExpr> args = {
-            IRExpr::var(rcx), IRExpr::var(rdx), IRExpr::var(r8), IRExpr::var(r9)
-        };
-        IRVar rax{0, "rax", 8};
-        stmt(IROp::Call, rax, IRExpr::call(std::move(name), std::move(args)));
+        Varnode rax_v = vn_reg(REG_RAX, "rax", 8);
+        Varnode fn_addr = vn_const(target);
+        fn_addr.name = std::move(name);
+        emit(out, PcodeOp::CALL, rax_v, {fn_addr,
+            vn_reg(REG_RCX, "rcx"), vn_reg(REG_RDX, "rdx"),
+            vn_reg(REG_R8, "r8"), vn_reg(REG_R9, "r9")});
         break;
     }
-    case InsnType::Ret:
-        out.has_ret = true;
-        stmt(IROp::Ret, IRVar{}, IRExpr::var(IRVar{0, "rax", 8}));
-        break;
-    case InsnType::Push: {
-        IRVar sp{4, "rsp", 8};
-        stmt(IROp::Assign, sp, IRExpr::binop(IROp::Sub, IRExpr::var(sp), IRExpr::imm(8)));
+    case InsnType::Ret: {
+        out.has_return = true;
+        emit(out, PcodeOp::RETURN, {}, {vn_reg(REG_RAX, "rax")});
         break;
     }
-    case InsnType::Pop: {
-        auto& dst_op = insn.ops[0];
-        IRVar sp{4, "rsp", 8};
-        if (dst_op.type == OpType::Reg) {
-            stmt(IROp::Assign, reg_var(dst_op.reg, dst_op.size), IRExpr::load(IRExpr::var(sp), 8));
-        }
-        stmt(IROp::Assign, sp, IRExpr::binop(IROp::Add, IRExpr::var(sp), IRExpr::imm(8)));
-        break;
-    }
-    case InsnType::Cmp:
-    case InsnType::Test: {
-        IRVar cmp_var{60, "__cmp_l", 8};
-        IRVar cmp_r{61, "__cmp_r", 8};
-        IRExpr lhs = operand_expr(insn, 0, db);
-        IRExpr rhs = operand_expr(insn, 1, db);
-        stmt(IROp::Assign, cmp_var, std::move(lhs));
-        stmt(IROp::Assign, cmp_r, std::move(rhs));
-        break;
-    }
-    case InsnType::Jcc: {
-        IROp cmp_op = jcc_to_cmp(insn.mnemonic_id);
-        IRVar cmp_l{60, "__cmp_l", 8};
-        IRVar cmp_r{61, "__cmp_r", 8};
-        out.cond = IRExpr::binop(cmp_op, IRExpr::var(cmp_l), IRExpr::var(cmp_r));
-        out.cond_true = insn.branch_target();
-        break;
-    }
-    case InsnType::Jmp:
-        break;
     case InsnType::Nop:
         break;
-    default: {
-        auto tmp = alloc_tmp();
-        IRExpr asm_expr;
-        asm_expr.op = IROp::Nop;
-        asm_expr.val = fmt::format("{} {}", insn.mnemonic, insn.op_str);
-        stmt(IROp::Nop, tmp, std::move(asm_expr));
+    default:
+        emit(out, PcodeOp::NOP, alloc_temp(), {});
         break;
     }
-    }
 }
 
-IRBlock Lifter::lift_block(const BasicBlock& bb, const AnalysisDB& db) {
-    IRBlock blk;
-    blk.addr = bb.start;
-    blk.succs = bb.succs;
-
+void Lifter::lift_block(const BasicBlock& bb, const AnalysisDB& db, PcodeBlock& out) {
+    out.addr = bb.start;
     for (auto& insn : bb.insns)
-        lift_insn(insn, db, blk);
-
-    if (blk.cond_true && bb.succs.size() >= 2) {
-        for (va_t s : bb.succs) {
-            if (s != blk.cond_true)
-                blk.cond_false = s;
-        }
-    } else if (blk.cond_true && bb.succs.size() == 1) {
-        blk.cond_false = 0;
-    }
-
-    return blk;
+        lift_insn(insn, db, out);
 }
 
-void Lifter::detect_locals(IRFunc& func) {
-    IRVar sp{4, "rsp", 8};
-    for (auto& blk : func.blocks) {
-        for (auto& s : blk.stmts) {
-            if (s.src.op == IROp::Load && !s.src.args.empty()) {
-                auto& addr = s.src.args[0];
-                if (addr.op == IROp::Add && addr.args.size() == 2) {
-                    if (addr.args[0].is_var() && addr.args[0].get_var().id == sp.id &&
-                        addr.args[1].is_imm()) {
-                        u64 off = addr.args[1].get_imm();
-                        auto name = (off >= 0x28) ? fmt::format("arg_{:X}", off - 0x28)
-                                                  : fmt::format("local_{:X}", off);
-                        IRVar local;
-                        local.id = next_var_++;
-                        local.name = name;
-                        local.size = 8;
-                        func.locals.push_back(local);
-                        s.src = IRExpr::var(local);
-                    }
-                }
-            }
-            if (s.src.op == IROp::Store && s.src.args.size() >= 2) {
-                auto& addr = s.src.args[0];
-                if (addr.op == IROp::Add && addr.args.size() == 2) {
-                    if (addr.args[0].is_var() && addr.args[0].get_var().id == sp.id &&
-                        addr.args[1].is_imm()) {
-                        u64 off = addr.args[1].get_imm();
-                        auto name = (off >= 0x28) ? fmt::format("arg_{:X}", off - 0x28)
-                                                  : fmt::format("local_{:X}", off);
-                        IRVar local;
-                        local.id = next_var_++;
-                        local.name = name;
-                        local.size = 8;
-                        func.locals.push_back(local);
-                        s.dst = local;
-                        s.op = IROp::Assign;
-                        s.src = s.src.args[1];
-                    }
-                }
-            }
-        }
-    }
-}
+PcodeFunc Lifter::lift(const Function& func, const AnalysisDB& db) {
+    next_temp_ = 256;
 
-IRFunc Lifter::lift(const Function& func, const AnalysisDB& db) {
-    next_var_ = 64;
-    cur_func_ = &func;
-
-    IRFunc ir;
-    ir.entry = func.entry;
-    ir.name = func.name;
+    PcodeFunc pf;
+    pf.entry = func.entry;
+    if (!func.name.empty())
+        pf.name = func.name;
+    else if (db.image_base && func.entry >= db.image_base)
+        pf.name = fmt::format("sub_{:X}", func.entry - db.image_base);
+    else
+        pf.name = fmt::format("sub_{:X}", func.entry);
 
     std::vector<va_t> order;
     for (auto& [addr, _] : func.blocks)
         order.push_back(addr);
     std::sort(order.begin(), order.end());
 
-    for (va_t baddr : order) {
-        auto it = func.blocks.find(baddr);
+    for (int i = 0; i < (int)order.size(); ++i)
+        addr_to_block_[order[i]] = i;
+
+    for (int i = 0; i < (int)order.size(); ++i) {
+        auto it = func.blocks.find(order[i]);
         if (it == func.blocks.end()) continue;
-        ir.blocks.push_back(lift_block(it->second, db));
+        PcodeBlock blk;
+        blk.id = i;
+        lift_block(it->second, db, blk);
+
+        for (va_t s : it->second.succs) {
+            auto sit = addr_to_block_.find(s);
+            if (sit != addr_to_block_.end())
+                blk.succs.push_back(sit->second);
+        }
+        pf.blocks.push_back(std::move(blk));
     }
 
-    ir.params = {
-        IRVar{1, "arg1", 8}, IRVar{2, "arg2", 8},
-        IRVar{8, "arg3", 8}, IRVar{9, "arg4", 8}
-    };
-    ir.next_var = next_var_;
+    // build preds
+    for (int i = 0; i < (int)pf.blocks.size(); ++i) {
+        for (int s : pf.blocks[i].succs)
+            if (s >= 0 && s < (int)pf.blocks.size())
+                pf.blocks[s].preds.push_back(i);
+    }
 
-    detect_locals(ir);
-    return ir;
+    pf.next_temp = next_temp_;
+    pf.params = {
+        vn_reg(REG_RCX, "rcx"), vn_reg(REG_RDX, "rdx"),
+        vn_reg(REG_R8, "r8"), vn_reg(REG_R9, "r9")
+    };
+
+    addr_to_block_.clear();
+    return pf;
 }
 
 }

@@ -10,6 +10,7 @@
     "zydis",
     "spdlog",
     "fmt",
-    "zlib"
+    "zlib",
+    "lua"
   ]
 }

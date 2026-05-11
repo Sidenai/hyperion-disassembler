@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(Hyperion VERSION 0.1.3 LANGUAGES CXX)
+project(Hyperion VERSION 0.1.4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,6 +19,7 @@ find_package(zydis CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 find_package(fmt CONFIG REQUIRED)
 find_package(ZLIB REQUIRED)
+find_package(Lua REQUIRED)
 
 file(GLOB_RECURSE HYPERION_SOURCES
     "src/*.cpp"
@@ -29,6 +30,7 @@ add_executable(${PROJECT_NAME} ${HYPERION_SOURCES})
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+    ${LUA_INCLUDE_DIR}
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
@@ -39,6 +41,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     spdlog::spdlog
     fmt::fmt
     ZLIB::ZLIB
+    ${LUA_LIBRARIES}
 )
 
 if(WIN32)

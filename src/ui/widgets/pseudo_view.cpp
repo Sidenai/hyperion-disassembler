@@ -16,7 +16,7 @@ void PseudoView::show_function(va_t entry) {
         lines_.push_back({0, fmt::format("// {} - {} blocks (too complex)", it->second.name, it->second.blocks.size()), entry});
         return;
     }
-    lines_ = dec_.decompile(it->second, *db_);
+    lines_ = dec_.decompile(it->second, *db_, rtti_);
 }
 
 void PseudoView::render() {
@@ -26,7 +26,7 @@ void PseudoView::render() {
     if (lines_.empty()) {
         auto it = db_->funcs.find(func_);
         if (it != db_->funcs.end() && !it->second.blocks.empty())
-            lines_ = dec_.decompile(it->second, *db_);
+            lines_ = dec_.decompile(it->second, *db_, rtti_);
     }
 
     if (lines_.empty()) {
@@ -38,6 +38,14 @@ void PseudoView::render() {
     auto fit = db_->funcs.find(func_);
     if (fit != db_->funcs.end()) {
         ImGui::TextColored(ImVec4(0.85f, 0.7f, 0.4f, 1), "%s", fit->second.name.c_str());
+        ImGui::SameLine(ImGui::GetWindowWidth() - 80);
+        if (ImGui::SmallButton("Copy All")) {
+            std::string full;
+            for (auto& line : lines_) {
+                full += std::string(line.indent * 4, ' ') + line.text + "\n";
+            }
+            ImGui::SetClipboardText(full.c_str());
+        }
         ImGui::Separator();
     }
 
@@ -62,7 +70,30 @@ void PseudoView::render() {
         if (ImGui::Selectable(id.c_str(), h))
             if (line.addr && nav_) nav_(line.addr);
         if (h) ImGui::PopStyleColor();
+
+        if (ImGui::BeginPopupContextItem()) {
+            if (ImGui::MenuItem("Copy Line")) {
+                ImGui::SetClipboardText(display.c_str());
+            }
+            if (ImGui::MenuItem("Copy All")) {
+                std::string full;
+                for (auto& l : lines_)
+                    full += std::string(l.indent * 4, ' ') + l.text + "\n";
+                ImGui::SetClipboardText(full.c_str());
+            }
+            ImGui::EndPopup();
+        }
     }
+
+    // Ctrl+C copies all when window is focused
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) &&
+        ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C)) {
+        std::string full;
+        for (auto& line : lines_)
+            full += std::string(line.indent * 4, ' ') + line.text + "\n";
+        ImGui::SetClipboardText(full.c_str());
+    }
+
     ImGui::EndChild();
     ImGui::End();
 }

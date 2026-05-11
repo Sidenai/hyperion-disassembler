@@ -3,6 +3,7 @@
 #include "core/disasm/disassembler.h"
 #include "analysis_db.h"
 #include "signatures.h"
+#include "rtti.h"
 #include "threading/worker_pool.h"
 #include "threading/task_scheduler.h"
 #include <atomic>
@@ -20,6 +21,8 @@ public:
     const AnalysisDB& db() const { return db_; }
     SignatureMatcher& sig_matcher() { return sigmatch_; }
     const SignatureMatcher& sig_matcher() const { return sigmatch_; }
+    RTTIParser& rtti_parser() { return rtti_; }
+    const RTTIParser& rtti_parser() const { return rtti_; }
 
 private:
     void linear_sweep();
@@ -39,10 +42,12 @@ private:
     void detect_noreturn();
     void detect_tail_calls();
     void detect_calling_conventions();
+    void detect_main();
     void propagate_dataflow();
     void detect_loops();
     void recover_structs();
     void populate_data_sections();
+    void propagate_interproc_types();
 
     void descend(va_t addr, std::unordered_set<va_t>& visited);
     const u8* va_to_ptr(va_t addr, size_t* max_len = nullptr);
@@ -57,6 +62,7 @@ private:
     WorkerPool&        pool_;
     TaskScheduler      sched_;
     SignatureMatcher   sigmatch_;
+    RTTIParser         rtti_;
     std::atomic<float> progress_{0.f};
     std::unordered_map<va_t, Insn> tentative_;
 };

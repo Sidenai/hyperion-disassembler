@@ -108,10 +108,11 @@ void XrefsPanel::render() {
                     ImGui::TableSetupColumn("Function", ImGuiTableColumnFlags_WidthFixed, 160);
                     ImGui::TableHeadersRow();
 
-                    for (auto& x : it->second) {
+                    for (int xi = 0; xi < (int)it->second.size(); ++xi) {
+                        auto& x = it->second[xi];
                         ImGui::TableNextRow();
                         ImGui::TableNextColumn();
-                        auto lbl = fmt::format("{:016X}##to{:X}", x.from, x.from);
+                        auto lbl = fmt::format("{:016X}##to{}", x.from, xi);
                         if (ImGui::Selectable(lbl.c_str(), false, ImGuiSelectableFlags_SpanAllColumns))
                             if (nav_) nav_(x.from);
                         ImGui::TableNextColumn();
@@ -139,10 +140,11 @@ void XrefsPanel::render() {
                     ImGui::TableSetupColumn("Function", ImGuiTableColumnFlags_WidthFixed, 160);
                     ImGui::TableHeadersRow();
 
-                    for (auto& x : it->second) {
+                    for (int xi = 0; xi < (int)it->second.size(); ++xi) {
+                        auto& x = it->second[xi];
                         ImGui::TableNextRow();
                         ImGui::TableNextColumn();
-                        auto lbl = fmt::format("{:016X}##fr{:X}", x.to, x.to);
+                        auto lbl = fmt::format("{:016X}##fr{}", x.to, xi);
                         if (ImGui::Selectable(lbl.c_str(), false, ImGuiSelectableFlags_SpanAllColumns))
                             if (nav_) nav_(x.to);
                         ImGui::TableNextColumn();

@@ -68,7 +68,15 @@ struct Global {
     std::string name;
 };
 
+struct FuncSignature {
+    std::vector<std::string> param_names;
+    std::vector<std::string> param_types;
+    std::string return_type = "int64_t";
+    int param_count = 4;
+};
+
 struct AnalysisDB {
+    va_t                                        image_base = 0;
     std::unordered_map<va_t, Insn>              insns;
     std::unordered_map<va_t, Function>          funcs;
     std::vector<Xref>                           xrefs;
@@ -84,6 +92,7 @@ struct AnalysisDB {
     std::vector<Vtable>                         vtables;
     std::unordered_map<va_t, Global>            globals;
     std::unordered_map<va_t, va_t>              resolved_indirect;
+    std::unordered_map<va_t, FuncSignature>     signatures;
     TypeSystem                                  types;
     mutable std::mutex                          mtx;
 
