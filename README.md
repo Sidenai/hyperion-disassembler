@@ -1,12 +1,11 @@
 # Hyperion
 
-A native x86/x64 disassembler and binary analysis tool for Windows PE files. Built from scratch in C++20 with ImGui.
+A native multi-architecture disassembler and binary analysis tool. Supports PE, ELF, Mach-O, and .NET binaries across x86, x64, ARM, ARM64, MIPS, and PPC. Built from scratch in C++20 with ImGui.
 
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord)](https://discord.gg/yjym2b7A)
 [![GitHub](https://img.shields.io/github/stars/mylovereturns/hyperion-disassembler?style=flat&label=Stars)](https://github.com/mylovereturns/hyperion-disassembler)
 
 Hyperion performs recursive descent disassembly, automatic function detection, control flow graph construction, cross-reference analysis, RTTI class recovery, and decompilation — all parallelized across available cores.
-<img width="2891" height="1146" alt="image" src="https://github.com/user-attachments/assets/a0cb18b1-109a-4e56-8aa8-58d34ced57af" />
 
 ## Community
 
@@ -59,10 +58,12 @@ Hyperion performs recursive descent disassembly, automatic function detection, c
 - Context menu: copy as C array, Python bytes, YARA pattern
 - Export: patched binary, .asm listing, IDAPython script, project save/load
 
-**Scripting**
+**Scripting & Plugins**
 - Embedded Lua 5.4 console (View > Script Console)
-- API: get_name, set_name, get_insn, get_bytes, get_functions, get_xrefs_to, set_comment, goto_addr
-- See [docs/scripting.md](docs/scripting.md) for full reference
+- Plugin system: drop `.lua` files in `plugins/` folder, auto-loaded on startup
+- Plugin API: register menu items, hotkeys, analysis callbacks
+- Script API: get_name, set_name, get_insn, get_bytes, get_functions, get_xrefs_to, set_comment, goto_addr, patch_byte, get_segments, get_arch
+- See [docs/scripting.md](docs/scripting.md) and [docs/plugins.md](docs/plugins.md)
 
 **Stability**
 - PE loader hardened against malformed binaries
@@ -106,7 +107,7 @@ cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.c
 cmake --build build --config Release
 ```
 
-Dependencies pulled via vcpkg: imgui (docking), glfw, zydis, spdlog, fmt, zlib, lua.
+Dependencies pulled via vcpkg: imgui (docking), glfw, zydis, capstone, spdlog, fmt, zlib, lua.
 
 ## Status
 
