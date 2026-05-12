@@ -7,6 +7,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # static CRT on MSVC
 if(MSVC)
+    if(VCPKG_TARGET_TRIPLET MATCHES "static")
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    endif()
     add_compile_options(/W4 /MP /permissive-)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX)
 else()
