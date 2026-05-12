@@ -1,5 +1,6 @@
 #include "hex_view.h"
 #include "ui/theme.h"
+#include "ui/fonts.h"
 #include <fmt/format.h>
 #include <algorithm>
 
@@ -103,6 +104,7 @@ void HexView::render() {
     size_t seg_size = seg->data.size();
     int total_lines = static_cast<int>((seg_size + cols - 1) / cols);
 
+    if (g_fonts.mono) ImGui::PushFont(g_fonts.mono);
     ImGui::BeginChild("##hexc", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
 
     if (scroll_pending_) {
@@ -271,6 +273,7 @@ void HexView::render() {
     }
 
     ImGui::EndChild();
+    if (g_fonts.mono) ImGui::PopFont();
     ImGui::End();
 }
 

@@ -1,8 +1,10 @@
 #include "imgui_backend.h"
+#include "ui/fonts.h"
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_opengl3.h>
 #include <spdlog/spdlog.h>
+#include <filesystem>
 
 namespace hype {
 
@@ -45,23 +47,42 @@ bool Renderer::init(int w, int h, const char* title) {
     ImFontConfig mono_cfg;
     mono_cfg.OversampleH = 3;
     mono_cfg.PixelSnapH = true;
+    ImFontConfig heading_cfg;
+    heading_cfg.OversampleH = 3;
+    heading_cfg.OversampleV = 1;
+    heading_cfg.PixelSnapH = true;
 
 #ifdef _WIN32
-    io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 16.0f, &cfg);
-    io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\consola.ttf", 14.0f, &mono_cfg);
+    g_fonts.ui = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 16.0f, &cfg);
+    g_fonts.mono = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\consola.ttf", 14.0f, &mono_cfg);
+    if (std::filesystem::exists("C:\\Windows\\Fonts\\segoeuib.ttf"))
+        g_fonts.heading = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeuib.ttf", 20.0f, &heading_cfg);
+    else
+        g_fonts.heading = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 20.0f, &heading_cfg);
 #elif defined(__APPLE__)
-    if (!io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/SFNSMono.ttf", 15.0f, &cfg))
-        if (!io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/Menlo.ttc", 15.0f, &cfg))
-            io.Fonts->AddFontDefault(&cfg);
-    if (!io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/SFNSMono.ttf", 14.0f, &mono_cfg))
-        if (!io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/Menlo.ttc", 14.0f, &mono_cfg))
-            io.Fonts->AddFontDefault(&mono_cfg);
+    g_fonts.ui = io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/SFNS.ttf", 16.0f, &cfg);
+    if (!g_fonts.ui)
+        g_fonts.ui = io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/Menlo.ttc", 15.0f, &cfg);
+    if (!g_fonts.ui)
+        g_fonts.ui = io.Fonts->AddFontDefault(&cfg);
+    g_fonts.mono = io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/SFNSMono.ttf", 14.0f, &mono_cfg);
+    if (!g_fonts.mono)
+        g_fonts.mono = io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/Menlo.ttc", 14.0f, &mono_cfg);
+    if (!g_fonts.mono)
+        g_fonts.mono = io.Fonts->AddFontDefault(&mono_cfg);
+    g_fonts.heading = io.Fonts->AddFontFromFileTTF("/System/Library/Fonts/SFNS.ttf", 20.0f, &heading_cfg);
+    if (!g_fonts.heading) g_fonts.heading = g_fonts.ui;
 #else
-    if (!io.Fonts->AddFontFromFileTTF("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 15.0f, &cfg))
-        io.Fonts->AddFontDefault(&cfg);
-    if (!io.Fonts->AddFontFromFileTTF("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 14.0f, &mono_cfg))
-        io.Fonts->AddFontDefault(&mono_cfg);
+    g_fonts.ui = io.Fonts->AddFontFromFileTTF("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 15.0f, &cfg);
+    if (!g_fonts.ui) g_fonts.ui = io.Fonts->AddFontDefault(&cfg);
+    g_fonts.mono = io.Fonts->AddFontFromFileTTF("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", 14.0f, &mono_cfg);
+    if (!g_fonts.mono) g_fonts.mono = io.Fonts->AddFontDefault(&mono_cfg);
+    g_fonts.heading = io.Fonts->AddFontFromFileTTF("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20.0f, &heading_cfg);
+    if (!g_fonts.heading) g_fonts.heading = g_fonts.ui;
 #endif
+    if (!g_fonts.ui) g_fonts.ui = io.Fonts->AddFontDefault();
+    if (!g_fonts.mono) g_fonts.mono = g_fonts.ui;
+    if (!g_fonts.heading) g_fonts.heading = g_fonts.ui;
 
     ImGui_ImplGlfw_InitForOpenGL(wnd_, true);
     ImGui_ImplOpenGL3_Init("#version 330");

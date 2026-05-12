@@ -30,6 +30,7 @@
 #include "ui/widgets/pe_header_view.h"
 #include "ui/widgets/script_console.h"
 #include "ui/widgets/sigmaker.h"
+#include "ui/widgets/settings_panel.h"
 #include "scripting/lua_engine.h"
 #include <memory>
 #include <string>
@@ -75,6 +76,9 @@ private:
     void save_recent_files();
     void add_recent_file(const std::string& path);
     void autosave_tick();
+    void render_nav_band();
+    void rebuild_nav_band();
+    void render_bg_image();
 
     Renderer         renderer_;
     WorkerPool       pool_;
@@ -107,6 +111,7 @@ private:
     ClassesView      clsv_;
     ScriptConsole    scriptc_;
     SigMaker         sigmaker_;
+    SettingsPanel    settings_panel_;
 
     LuaEngine        lua_;
     PDBLoader        pdb_;
@@ -145,6 +150,10 @@ private:
     std::chrono::steady_clock::time_point last_autosave_;
 
     std::vector<PackerInfo> packer_results_;
+
+    enum NavBandType : u8 { NB_Empty, NB_Code, NB_Func, NB_Data, NB_String, NB_Import, NB_Entropy };
+    std::vector<u8> nav_band_data_;
+    int             nav_band_width_ = 0;
 };
 
 }

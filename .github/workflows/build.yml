@@ -1,0 +1,70 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  BUILD_TYPE: Release
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Configure
+      run: cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-windows-static -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+    - name: Build
+      run: cmake --build build --config ${{ env.BUILD_TYPE }}
+    - name: Hash
+      run: |
+        $hash = (Get-FileHash build/Release/Hyperion.exe -Algorithm SHA256).Hash
+        echo "SHA256: $hash" | Tee-Object -FilePath build/Release/SHA256.txt
+      shell: pwsh
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: Hyperion-Windows-x64
+        path: |
+          build/Release/Hyperion.exe
+          build/Release/SHA256.txt
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install deps
+      run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libwayland-dev libxkbcommon-dev
+    - name: Configure
+      run: cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=/usr/local/share/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=x64-linux -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+    - name: Build
+      run: cmake --build build --config ${{ env.BUILD_TYPE }}
+    - name: Hash
+      run: sha256sum build/Hyperion > build/SHA256.txt && cat build/SHA256.txt
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: Hyperion-Linux-x64
+        path: |
+          build/Hyperion
+          build/SHA256.txt
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Configure
+      run: cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=/usr/local/share/vcpkg/scripts/buildsystems/vcpkg.cmake -DVCPKG_TARGET_TRIPLET=arm64-osx -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
+    - name: Build
+      run: cmake --build build --config ${{ env.BUILD_TYPE }}
+    - name: Hash
+      run: shasum -a 256 build/Hyperion > build/SHA256.txt && cat build/SHA256.txt
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: Hyperion-macOS
+        path: |
+          build/Hyperion
+          build/SHA256.txt

@@ -1,6 +1,7 @@
 #include "disasm_view.h"
 #include "stack_frame_view.h"
 #include "ui/theme.h"
+#include "ui/fonts.h"
 #include <fmt/format.h>
 #include <algorithm>
 
@@ -276,6 +277,7 @@ void DisasmView::render() {
     ImGui::TextDisabled("(%d items)", (int)addrs_.size());
     ImGui::Separator();
 
+    if (g_fonts.mono) ImGui::PushFont(g_fonts.mono);
     float lh = ImGui::GetTextLineHeightWithSpacing();
     int total = static_cast<int>(addrs_.size());
 
@@ -332,6 +334,7 @@ void DisasmView::render() {
     }
 
     ImGui::EndChild();
+    if (g_fonts.mono) ImGui::PopFont();
     ImGui::End();
 }
 

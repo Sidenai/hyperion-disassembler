@@ -1,4 +1,5 @@
 build/
+build_static/
 .vs/
 *.user
 *.suo

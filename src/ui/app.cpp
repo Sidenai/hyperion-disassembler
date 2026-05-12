@@ -1,5 +1,7 @@
+#define NOMINMAX
 #include "app.h"
 #include "ui/theme.h"
+#include "ui/fonts.h"
 #include "core/analysis/packer_detect.h"
 #include "core/loader/dotnet_loader.h"
 #include <imgui.h>
@@ -9,6 +11,7 @@
 #include <thread>
 #include <fstream>
 #include <cstring>
+#include <cmath>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -48,6 +51,7 @@ std::string save_dialog() {
 }
 
 App::App() : pool_(std::thread::hardware_concurrency()) {
+    settings_panel_.load_all();
     auto nav = [this](va_t a) { navigate_to(a); };
     dv_.set_nav(nav);
     dv_.set_undo(&undo_);
@@ -81,6 +85,14 @@ int App::run() {
         return 1;
 
     renderer_.set_drop_callback([this](const char* p) { open_file(p); });
+    {
+        auto& ct = settings_panel_.custom_theme();
+        g_custom_theme.bg[0] = ct.bg[0]; g_custom_theme.bg[1] = ct.bg[1]; g_custom_theme.bg[2] = ct.bg[2]; g_custom_theme.bg[3] = ct.bg[3];
+        g_custom_theme.text[0] = ct.text[0]; g_custom_theme.text[1] = ct.text[1]; g_custom_theme.text[2] = ct.text[2]; g_custom_theme.text[3] = ct.text[3];
+        g_custom_theme.accent[0] = ct.accent[0]; g_custom_theme.accent[1] = ct.accent[1]; g_custom_theme.accent[2] = ct.accent[2]; g_custom_theme.accent[3] = ct.accent[3];
+        g_custom_theme.surface[0] = ct.surface[0]; g_custom_theme.surface[1] = ct.surface[1]; g_custom_theme.surface[2] = ct.surface[2]; g_custom_theme.surface[3] = ct.surface[3];
+        g_custom_theme.border[0] = ct.border[0]; g_custom_theme.border[1] = ct.border[1]; g_custom_theme.border[2] = ct.border[2]; g_custom_theme.border[3] = ct.border[3];
+    }
     apply_theme();
     out_.log("Hyperion v" HYPERION_VERSION " ready");
     out_.log("Drop a PE file or use File > Open (Ctrl+O)");
@@ -131,6 +143,7 @@ int App::run() {
             scriptc_.set_engine(&lua_);
             sigmaker_.set_data(&db, img_.get());
             sigmaker_.set_nav([this](va_t a) { navigate_to(a); sync_panels(a); });
+            rebuild_nav_band();
         }
 
         if (diff_done_.exchange(false)) {
@@ -161,6 +174,31 @@ int App::run() {
         clsv_.render();
         scriptc_.render();
         sigmaker_.render();
+        settings_panel_.render();
+
+        if (settings_panel_.theme_changed()) {
+            auto& ct = settings_panel_.custom_theme();
+            g_custom_theme.bg[0] = ct.bg[0]; g_custom_theme.bg[1] = ct.bg[1]; g_custom_theme.bg[2] = ct.bg[2]; g_custom_theme.bg[3] = ct.bg[3];
+            g_custom_theme.text[0] = ct.text[0]; g_custom_theme.text[1] = ct.text[1]; g_custom_theme.text[2] = ct.text[2]; g_custom_theme.text[3] = ct.text[3];
+            g_custom_theme.accent[0] = ct.accent[0]; g_custom_theme.accent[1] = ct.accent[1]; g_custom_theme.accent[2] = ct.accent[2]; g_custom_theme.accent[3] = ct.accent[3];
+            g_custom_theme.surface[0] = ct.surface[0]; g_custom_theme.surface[1] = ct.surface[1]; g_custom_theme.surface[2] = ct.surface[2]; g_custom_theme.surface[3] = ct.surface[3];
+            g_custom_theme.border[0] = ct.border[0]; g_custom_theme.border[1] = ct.border[1]; g_custom_theme.border[2] = ct.border[2]; g_custom_theme.border[3] = ct.border[3];
+            apply_theme();
+            settings_panel_.clear_theme_changed();
+        }
+
+        {
+            auto& s = ImGui::GetStyle();
+            auto& st = settings_panel_.settings();
+            s.WindowRounding = st.border_radius;
+            s.ChildRounding = st.border_radius;
+            s.FrameRounding = st.border_radius;
+            s.PopupRounding = st.border_radius;
+            s.TabRounding = st.border_radius * 0.5f;
+            s.GrabRounding = st.border_radius;
+            s.ScrollbarSize = st.scrollbar_width;
+            s.Alpha = st.window_opacity;
+        }
 
         autosave_tick();
 
@@ -172,6 +210,45 @@ int App::run() {
         if (show_bookmarks_) show_bookmarks_dlg();
         if (show_sigs_) show_sigs_dlg();
         if (show_apply_type_) show_apply_type_dlg();
+
+        // status bar
+        {
+            std::string left_str;
+            if (analyzer_) {
+                auto cur = dv_.cursor();
+                auto func_entry = find_func_for(cur);
+                std::string fname;
+                if (func_entry) {
+                    auto nit = analyzer_->db().names.find(func_entry);
+                    fname = nit != analyzer_->db().names.end() ? nit->second :
+                        analyzer_->db().funcs.count(func_entry) ? analyzer_->db().funcs.at(func_entry).name : "";
+                }
+                left_str = fmt::format("0x{:X}", cur);
+                if (!fname.empty()) left_str += "  " + fname;
+            }
+
+            auto center_str = file_path_.empty() ? "No file loaded" :
+                std::filesystem::path(file_path_).filename().string();
+
+            std::string right_str;
+            if (analyzer_) {
+                auto arch_str = [](Arch a) -> const char* {
+                    switch (a) {
+                    case Arch::X86:   return "x86";
+                    case Arch::X64:   return "x64";
+                    case Arch::ARM:   return "ARM";
+                    case Arch::ARM64: return "ARM64";
+                    case Arch::MIPS:  return "MIPS";
+                    case Arch::PPC:   return "PPC";
+                    }
+                    return "?";
+                };
+                right_str = fmt::format("{}  |  {} insns",
+                    arch_str(img_->arch), analyzer_->db().insns.size());
+            }
+
+            render_status_bar(left_str.c_str(), center_str.c_str(), right_str.c_str());
+        }
 
         renderer_.end_frame();
     }
@@ -321,7 +398,7 @@ void App::build_default_layout(ImGuiID dock_id) {
     ImGui::DockBuilderDockWindow("Hex View", center);
 
     ImGui::DockBuilderDockWindow("Pseudo Code", right);
-    ImGui::DockBuilderDockWindow("Graph", right);
+    ImGui::DockBuilderDockWindow("Graph", center);
     ImGui::DockBuilderDockWindow("Call Graph", right);
 
     ImGui::DockBuilderDockWindow("Output", bottom);
@@ -337,6 +414,17 @@ void App::build_default_layout(ImGuiID dock_id) {
 
 void App::render_dockspace() {
     ImGuiViewport* vp = ImGui::GetMainViewport();
+
+    render_bg_image();
+
+    // make windows semi-transparent when bg image is set
+    bool has_bg = settings_panel_.bg_texture() != 0;
+    if (has_bg) {
+        float win_alpha = settings_panel_.settings().window_opacity;
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.067f, 0.071f, 0.090f, win_alpha));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+    }
+
     ImGui::SetNextWindowPos(vp->WorkPos);
     ImGui::SetNextWindowSize(vp->WorkSize);
     ImGui::SetNextWindowViewport(vp->ID);
@@ -357,7 +445,11 @@ void App::render_dockspace() {
         build_default_layout(dock_id);
         layout_built_ = true;
     }
-    ImGui::DockSpace(dock_id, ImVec2(0, 0), ImGuiDockNodeFlags_PassthruCentralNode);
+
+    render_nav_band();
+
+    float status_h = 24.0f;
+    ImGui::DockSpace(dock_id, ImVec2(0, -status_h), ImGuiDockNodeFlags_PassthruCentralNode);
 
     if (busy_) {
         ImVec2 sz = vp->WorkSize;
@@ -374,10 +466,14 @@ void App::render_dockspace() {
         ImGui::End();
     }
     ImGui::End();
+    if (has_bg) ImGui::PopStyleColor(2);
 }
 
 void App::render_menubar() {
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12, 10));
     if (ImGui::BeginMainMenuBar()) {
+        ImGui::PopStyleVar();
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(14, 8));
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("Open", "Ctrl+O")) {
                 auto p = open_dialog();
@@ -448,6 +544,9 @@ void App::render_menubar() {
             ImGui::Separator();
             if (ImGui::MenuItem("Auto-save", nullptr, autosave_enabled_))
                 autosave_enabled_ = !autosave_enabled_;
+            ImGui::Separator();
+            if (ImGui::MenuItem("Settings", "Ctrl+,"))
+                settings_panel_.show();
             ImGui::EndMenu();
         }
 
@@ -504,7 +603,10 @@ void App::render_menubar() {
                 (unsigned long long)analyzer_->db().insns.size(),
                 (unsigned long long)analyzer_->db().funcs.size());
         }
+        ImGui::PopStyleVar();
         ImGui::EndMainMenuBar();
+    } else {
+        ImGui::PopStyleVar();
     }
 }
 
@@ -515,10 +617,12 @@ void App::handle_keys() {
     if (show_goto_ || show_rename_ || show_comment_ || show_rebase_)
         return;
 
-    if (ImGui::IsKeyPressed(ImGuiKey_G) && !io.KeyCtrl) show_goto_ = true;
-    if (ImGui::IsKeyPressed(ImGuiKey_N) && !io.KeyCtrl) show_rename_ = true;
-    if (ImGui::IsKeyPressed(ImGuiKey_Semicolon)) show_comment_ = true;
-    if (ImGui::IsKeyPressed(ImGuiKey_X) && !io.KeyCtrl) {
+    auto& kb = settings_panel_.keybinds();
+
+    if (kb.check("goto")) show_goto_ = true;
+    if (kb.check("rename")) show_rename_ = true;
+    if (kb.check("comment")) show_comment_ = true;
+    if (kb.check("xrefs")) {
         va_t xaddr = dv_.cursor();
         if (analyzer_) {
             auto iit = analyzer_->db().insns.find(xaddr);
@@ -530,18 +634,16 @@ void App::handle_keys() {
         xp_.show_for(xaddr);
         xp_.show_popup(xaddr);
     }
-    if (ImGui::IsKeyPressed(ImGuiKey_Space) && !io.KeyCtrl) sync_panels(dv_.cursor());
 
-    // Data ops
-    if (ImGui::IsKeyPressed(ImGuiKey_D) && !io.KeyCtrl && analyzer_) dv_.cmd_define_data();
-    if (ImGui::IsKeyPressed(ImGuiKey_A) && !io.KeyCtrl && analyzer_) dv_.cmd_define_string();
-    if (ImGui::IsKeyPressed(ImGuiKey_U) && !io.KeyCtrl && analyzer_) dv_.cmd_undefine();
-    if (ImGui::IsKeyPressed(ImGuiKey_C) && !io.KeyCtrl && analyzer_) dv_.cmd_force_code();
-    if (ImGui::IsKeyPressed(ImGuiKey_H) && !io.KeyCtrl && analyzer_) dv_.cmd_toggle_hex();
+    if (kb.check("data") && analyzer_) dv_.cmd_define_data();
+    if (kb.check("string") && analyzer_) dv_.cmd_define_string();
+    if (kb.check("undefine") && analyzer_) dv_.cmd_undefine();
+    if (kb.check("code") && analyzer_) dv_.cmd_force_code();
+    if (kb.check("hex") && analyzer_) dv_.cmd_toggle_hex();
+
     if (ImGui::IsKeyPressed(ImGuiKey_T) && !io.KeyCtrl && analyzer_) show_apply_type_ = true;
 
-    // Enter = follow branch
-    if (ImGui::IsKeyPressed(ImGuiKey_Enter) && !io.KeyCtrl && analyzer_) {
+    if (kb.check("follow") && analyzer_) {
         auto* insn_ptr = analyzer_->db().insns.count(dv_.cursor()) ?
             &analyzer_->db().insns.at(dv_.cursor()) : nullptr;
         if (insn_ptr) {
@@ -553,7 +655,7 @@ void App::handle_keys() {
         }
     }
 
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    if (kb.check("back")) {
         if (show_goto_ || show_rename_ || show_rebase_ || show_comment_ ||
             show_segments_ || show_bookmarks_ || show_sigs_ || show_apply_type_) {
             show_goto_ = show_rename_ = show_rebase_ = show_comment_ = false;
@@ -583,6 +685,7 @@ void App::handle_keys() {
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y)) {
         if (undo_.can_redo()) { auto d = undo_.redo(); out_.log("Redo: " + d); }
     }
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Comma)) settings_panel_.show();
     if (io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_B)) srch_.open_binary();
     if (io.KeyCtrl && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_S) && analyzer_) {
         va_t func = find_func_for(dv_.cursor());
@@ -595,12 +698,36 @@ void App::handle_keys() {
     if (ImGui::IsKeyPressed(ImGuiKey_Tab) && !io.KeyCtrl)
         sync_panels(dv_.cursor());
 
-    if (ImGui::IsKeyPressed(ImGuiKey_F5)) {
+    if (kb.check("decompile")) {
         va_t func = find_func_for(dv_.cursor());
         if (func) {
             pv_.show_function(func);
             pv_.highlight_addr(dv_.cursor());
             ImGui::SetWindowFocus("Pseudo Code");
+        }
+    }
+
+    if (kb.check("strings_panel"))
+        ImGui::SetWindowFocus("Strings");
+
+    if (kb.check("graph")) {
+        static bool in_graph = false;
+        in_graph = !in_graph;
+        if (in_graph) {
+            sync_panels(dv_.cursor());
+            ImGui::SetWindowFocus("Graph");
+        } else {
+            ImGui::SetWindowFocus("Disassembly");
+        }
+    }
+
+    if (kb.check("create_func") && analyzer_) {
+        va_t cur = dv_.cursor();
+        if (!analyzer_->db().funcs.count(cur)) {
+            Function f; f.entry = cur; f.name = fmt::format("sub_{:X}", cur - analyzer_->db().image_base);
+            analyzer_->db().funcs[cur] = std::move(f);
+            analyzer_->db().names[cur] = analyzer_->db().funcs[cur].name;
+            out_.log(fmt::format("Created function at {:X}", cur));
         }
     }
 }
@@ -1208,6 +1335,144 @@ void App::add_recent_file(const std::string& path) {
     save_recent_files();
 }
 
+void App::rebuild_nav_band() {
+    nav_band_data_.clear();
+    if (!img_ || img_->segments.empty() || !analyzer_) return;
+
+    int w = nav_band_width_;
+    if (w <= 0) return;
+    nav_band_data_.resize(w, NB_Empty);
+
+    va_t min_addr = img_->segments.front().va;
+    va_t max_addr = min_addr;
+    for (auto& seg : img_->segments)
+        max_addr = (std::max)(max_addr, seg.va + seg.size);
+
+    u64 range = max_addr - min_addr;
+    if (range == 0) range = 1;
+
+    auto addr_to_px = [&](va_t a) -> int {
+        return (int)((double)(a - min_addr) / range * w);
+    };
+
+    // fill entire segments with base type first
+    for (auto& seg : img_->segments) {
+        int px_start = addr_to_px(seg.va);
+        int px_end = addr_to_px(seg.va + seg.size);
+        u8 base_type = seg.executable() ? NB_Code : NB_Data;
+        for (int px = std::max(0, px_start); px < std::min(w, px_end); px++)
+            nav_band_data_[px] = base_type;
+    }
+
+    // imports
+    for (auto& imp : img_->imports) {
+        int px = addr_to_px(imp.iat_addr);
+        if (px >= 0 && px < w) nav_band_data_[px] = NB_Import;
+    }
+
+    // strings
+    auto& db = analyzer_->db();
+    for (auto& [sa, sv] : db.strings) {
+        int px_start = addr_to_px(sa);
+        int px_end = addr_to_px(sa + sv.size());
+        for (int px = std::max(0, px_start); px <= std::min(w - 1, px_end); px++)
+            nav_band_data_[px] = NB_String;
+    }
+
+    // functions (mark wider range)
+    for (auto& [entry, func] : db.funcs) {
+        int px = addr_to_px(entry);
+        if (px >= 0 && px < w) nav_band_data_[px] = NB_Func;
+        // try to mark a few pixels for visibility
+        if (px + 1 < w) nav_band_data_[px + 1] = NB_Func;
+    }
+
+    // entropy heuristic: scan executable sections for high-entropy 256-byte blocks
+    for (auto& seg : img_->segments) {
+        if (!seg.executable() || seg.data.empty()) continue;
+        constexpr int block = 256;
+        for (size_t off = 0; off + block <= seg.data.size(); off += block) {
+            int hist[256] = {};
+            for (int i = 0; i < block; ++i) hist[seg.data[off + i]]++;
+            double ent = 0;
+            for (int i = 0; i < 256; ++i) {
+                if (!hist[i]) continue;
+                double p = hist[i] / (double)block;
+                ent -= p * std::log2(p);
+            }
+            if (ent > 7.0) {
+                int px = addr_to_px(seg.va + off);
+                if (px >= 0 && px < w) nav_band_data_[px] = NB_Entropy;
+            }
+        }
+    }
+}
+
+void App::render_nav_band() {
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+    float width = ImGui::GetContentRegionAvail().x;
+    constexpr float height = 18.0f;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    if (!img_ || img_->segments.empty()) {
+        dl->AddRectFilled(pos, ImVec2(pos.x + width, pos.y + height), IM_COL32(30, 30, 30, 255));
+        ImGui::Dummy(ImVec2(width, height));
+        return;
+    }
+
+    int w = (int)width;
+    if (w != nav_band_width_) {
+        nav_band_width_ = w;
+        rebuild_nav_band();
+    }
+
+    static constexpr ImU32 type_colors[] = {
+        IM_COL32(20, 20, 25, 255),    // Empty - very dark
+        IM_COL32(50, 130, 230, 255),  // Code (bright blue)
+        IM_COL32(80, 180, 255, 255),  // Func (light blue)
+        IM_COL32(70, 75, 90, 255),    // Data (medium grey)
+        IM_COL32(240, 190, 40, 255),  // String (bright yellow)
+        IM_COL32(180, 70, 230, 255),  // Import (bright purple)
+        IM_COL32(230, 60, 60, 255),   // Entropy (bright red)
+    };
+
+    for (int px = 0; px < w && px < (int)nav_band_data_.size(); ++px) {
+        ImU32 col = type_colors[nav_band_data_[px]];
+        dl->AddLine(ImVec2(pos.x + px, pos.y), ImVec2(pos.x + px, pos.y + height), col);
+    }
+
+    // cursor indicator
+    va_t min_addr = img_->segments.front().va;
+    va_t max_addr = min_addr;
+    for (auto& seg : img_->segments)
+        max_addr = (std::max)(max_addr, seg.va + seg.size);
+    u64 range = max_addr - min_addr;
+    if (range == 0) range = 1;
+
+    va_t cur = dv_.cursor();
+    if (cur >= min_addr && cur <= max_addr) {
+        float cx = (float)((double)(cur - min_addr) / range * width);
+        dl->AddTriangleFilled(
+            ImVec2(pos.x + cx - 4, pos.y + height),
+            ImVec2(pos.x + cx + 4, pos.y + height),
+            ImVec2(pos.x + cx, pos.y + height - 6),
+            IM_COL32(255, 255, 255, 255));
+    }
+
+    ImGui::InvisibleButton("##navband", ImVec2(width, height));
+    if (ImGui::IsItemClicked()) {
+        float mx = ImGui::GetIO().MousePos.x - pos.x;
+        va_t target = min_addr + (u64)((double)mx / width * range);
+        navigate_to(target);
+        sync_panels(target);
+    }
+    if (ImGui::IsItemHovered()) {
+        float mx = ImGui::GetIO().MousePos.x - pos.x;
+        va_t hover_addr = min_addr + (u64)((double)mx / width * range);
+        ImGui::SetTooltip("0x%llX", (unsigned long long)hover_addr);
+    }
+}
+
 void App::autosave_tick() {
     if (!autosave_enabled_ || !analyzer_ || !img_ || busy_) return;
     if (file_path_.empty()) return;
@@ -1218,6 +1483,20 @@ void App::autosave_tick() {
     auto pp = std::filesystem::path(file_path_).replace_extension(".hdb");
     database_.save(pp, *img_, analyzer_->db());
     out_.log("Auto-saved");
+}
+
+void App::render_bg_image() {
+    auto tex = settings_panel_.bg_texture();
+    if (!tex) return;
+    float opacity = settings_panel_.settings().bg_opacity;
+    if (opacity <= 0.0f) return;
+
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImVec2 p0 = vp->WorkPos;
+    ImVec2 p1 = {p0.x + vp->WorkSize.x, p0.y + vp->WorkSize.y};
+    ImU32 col = IM_COL32(255, 255, 255, (int)(opacity * 255));
+    ImGui::GetBackgroundDrawList()->AddImage(
+        (ImTextureID)(intptr_t)tex, p0, p1, {0, 0}, {1, 1}, col);
 }
 
 void App::export_asm() {
