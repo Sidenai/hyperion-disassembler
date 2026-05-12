@@ -1,15 +1,20 @@
 cmake_minimum_required(VERSION 3.25)
-project(Hyperion VERSION 0.1.5 LANGUAGES CXX)
+project(Hyperion VERSION 0.1.6 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# static CRT on MSVC
 if(MSVC)
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
     add_compile_options(/W4 /MP /permissive-)
-    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
+    if(APPLE)
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo")
+    endif()
 endif()
 
 find_package(imgui CONFIG REQUIRED)
