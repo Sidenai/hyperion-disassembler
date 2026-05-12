@@ -243,6 +243,7 @@ int App::run() {
         settings_panel_.render();
 
         if (show_plugin_manager_) render_plugin_manager();
+        render_results_windows();
 
         if (settings_panel_.theme_changed()) {
             auto& ct = settings_panel_.custom_theme();
@@ -683,14 +684,25 @@ void App::render_menubar() {
                 }
                 if (plg.items.size() == 1) {
                     // Single action — flat menu item labelled by the action
-                    if (ImGui::MenuItem(plg.items[0].label.c_str()))
+                    if (ImGui::MenuItem(plg.items[0].label.c_str())) {
                         lua_.invoke_menu_item(pi, 0);
+                        if (!lua_.last_output().empty()) {
+                            scriptc_.append_output(lua_.last_output());
+                            ImGui::SetWindowFocus("Script Console");
+                        }
+                    }
                 } else if (!plg.items.empty()) {
                     // Multiple actions — submenu labelled by the plugin name
                     if (ImGui::BeginMenu(plg.name.c_str())) {
-                        for (int ii = 0; ii < static_cast<int>(plg.items.size()); ++ii)
-                            if (ImGui::MenuItem(plg.items[static_cast<size_t>(ii)].label.c_str()))
+                        for (int ii = 0; ii < static_cast<int>(plg.items.size()); ++ii) {
+                            if (ImGui::MenuItem(plg.items[static_cast<size_t>(ii)].label.c_str())) {
                                 lua_.invoke_menu_item(pi, ii);
+                                if (!lua_.last_output().empty()) {
+                                    scriptc_.append_output(lua_.last_output());
+                                    ImGui::SetWindowFocus("Script Console");
+                                }
+                            }
+                        }
                         ImGui::EndMenu();
                     }
                 } else {
@@ -1768,6 +1780,109 @@ void App::render_plugin_manager() {
     }
 
     ImGui::End();
+}
+
+void App::render_results_windows() {
+    auto& windows = lua_.result_windows();
+    for (auto& w : windows) {
+        if (!w.open) continue;
+
+        ImGui::SetNextWindowSize(ImVec2(820, 480), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(400, 200), ImVec2(FLT_MAX, FLT_MAX));
+
+        ImGuiWindowFlags wflags = ImGuiWindowFlags_None;
+        if (!ImGui::Begin(w.title.c_str(), &w.open, wflags)) {
+            ImGui::End();
+            continue;
+        }
+
+        // Search / filter bar
+        ImGui::SetNextItemWidth(-1.f);
+        ImGui::InputTextWithHint("##rw_filter", "Filter results...", w.filter, sizeof(w.filter));
+        ImGui::Separator();
+
+        std::string filter_lower = w.filter;
+        for (auto& c : filter_lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+        // Count visible rows for the footer
+        int visible = 0;
+
+        ImGuiTableFlags tflags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                 ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable |
+                                 ImGuiTableFlags_SizingStretchProp;
+
+        // +1 column for the address
+        int ncols = static_cast<int>(w.headers.size()) + 1;
+        if (ImGui::BeginTable("##rw_tbl", ncols, tflags, ImVec2(0, -ImGui::GetFrameHeightWithSpacing()))) {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 110.f);
+            for (auto& h : w.headers)
+                ImGui::TableSetupColumn(h.c_str(), ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableHeadersRow();
+
+            for (int ri = 0; ri < static_cast<int>(w.rows.size()); ++ri) {
+                auto& row = w.rows[static_cast<size_t>(ri)];
+
+                // Apply filter: check address hex + all col values
+                if (filter_lower.size() > 0) {
+                    char addr_buf[32];
+                    std::snprintf(addr_buf, sizeof(addr_buf), "%llx",
+                        static_cast<unsigned long long>(row.addr));
+                    bool match = (std::string(addr_buf).find(filter_lower) != std::string::npos);
+                    if (!match) {
+                        for (auto& cv : row.cols) {
+                            std::string cvl = cv;
+                            for (auto& c : cvl) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                            if (cvl.find(filter_lower) != std::string::npos) { match = true; break; }
+                        }
+                    }
+                    if (!match) continue;
+                }
+                visible++;
+
+                ImGui::TableNextRow();
+
+                // Address column — clickable
+                ImGui::TableSetColumnIndex(0);
+                char addr_label[48];
+                std::snprintf(addr_label, sizeof(addr_label), "0x%llX##row%d",
+                    static_cast<unsigned long long>(row.addr), ri);
+
+                bool selected = (w.selected == ri);
+                if (ImGui::Selectable(addr_label, selected,
+                        ImGuiSelectableFlags_SpanAllColumns |
+                        ImGuiSelectableFlags_AllowOverlap,
+                        ImVec2(0, 0))) {
+                    w.selected = ri;
+                    if (img_ && analyzer_) {
+                        navigate_to(row.addr);
+                        sync_panels(row.addr);
+                    }
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Click to navigate to 0x%llX",
+                        static_cast<unsigned long long>(row.addr));
+
+                // Data columns
+                for (int ci = 0; ci < static_cast<int>(row.cols.size()); ++ci) {
+                    if (ImGui::TableSetColumnIndex(ci + 1))
+                        ImGui::TextUnformatted(row.cols[static_cast<size_t>(ci)].c_str());
+                }
+            }
+            ImGui::EndTable();
+        }
+
+        // Footer: count
+        ImGui::TextDisabled("%d result(s)", visible);
+
+        ImGui::End();
+    }
+
+    // Remove windows the user closed
+    windows.erase(
+        std::remove_if(windows.begin(), windows.end(),
+            [](const ResultsWindow& w){ return !w.open; }),
+        windows.end());
 }
 
 } // namespace hype
