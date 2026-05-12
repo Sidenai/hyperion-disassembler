@@ -9,6 +9,16 @@
 #include <algorithm>
 #include <cstring>
 
+#ifdef __APPLE__
+#define GL_SILENCE_DEPRECATION
+#include <OpenGL/gl.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#include <GL/gl.h>
+#else
+#include <GL/gl.h>
+#endif
+
 #define STB_IMAGE_IMPLEMENTATION
 #include "third_party/stb_image.h"
 
