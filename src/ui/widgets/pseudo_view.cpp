@@ -1,5 +1,6 @@
 #include "pseudo_view.h"
 #include "ui/theme.h"
+#include "ui/fonts.h"
 #include <fmt/format.h>
 
 namespace hype {
@@ -49,6 +50,7 @@ void PseudoView::render() {
         ImGui::Separator();
     }
 
+    if (g_fonts.mono) ImGui::PushFont(g_fonts.mono);
     ImGui::BeginChild("##pseudo_scroll");
     for (int i = 0; i < (int)lines_.size(); ++i) {
         auto& line = lines_[i];
@@ -95,6 +97,7 @@ void PseudoView::render() {
     }
 
     ImGui::EndChild();
+    if (g_fonts.mono) ImGui::PopFont();
     ImGui::End();
 }
 

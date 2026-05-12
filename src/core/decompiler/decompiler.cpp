@@ -37,7 +37,18 @@ std::vector<PseudoLine> Decompiler::decompile(const Function& func, const Analys
         return out;
     }
 
-    PcodeFunc pf = lifter_.lift(func, db);
+    PcodeFunc pf;
+    bool is_arm64 = false;
+    for (auto& [ba, bb] : func.blocks) {
+        if (!bb.insns.empty() && bb.insns[0].len == 4) {
+            is_arm64 = true;
+            break;
+        }
+    }
+    if (is_arm64)
+        pf = arm64_lifter_.lift(func, db);
+    else
+        pf = lifter_.lift(func, db);
     ssa_.build(pf);
     dce_.run(pf);
     prop_.run(pf);
