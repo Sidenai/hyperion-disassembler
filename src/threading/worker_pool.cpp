@@ -7,8 +7,8 @@ WorkerPool::WorkerPool(unsigned n) {
     if (n == 0) n = 4;
 
     for (unsigned i = 0; i < n; ++i) {
-        workers_.emplace_back([this](std::stop_token st) {
-            while (!st.stop_requested()) {
+        workers_.emplace_back([this]() {
+            while (true) {
                 std::function<void()> task;
                 {
                     std::unique_lock lk(mtx_);
@@ -28,6 +28,8 @@ WorkerPool::WorkerPool(unsigned n) {
 WorkerPool::~WorkerPool() {
     stop_ = true;
     cv_.notify_all();
+    for (auto& w : workers_)
+        if (w.joinable()) w.join();
 }
 
 void WorkerPool::wait_idle() {
