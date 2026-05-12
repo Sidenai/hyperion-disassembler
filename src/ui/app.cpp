@@ -1306,7 +1306,7 @@ void App::compare_with() {
 }
 
 void App::load_recent_files() {
-    auto exe_dir = std::filesystem::path(__argv[0]).parent_path();
+    auto exe_dir = std::filesystem::current_path();
     auto rf_path = exe_dir / "hyperion_recent.txt";
     std::ifstream in(rf_path);
     if (!in) return;
@@ -1320,7 +1320,7 @@ void App::load_recent_files() {
 }
 
 void App::save_recent_files() {
-    auto exe_dir = std::filesystem::path(__argv[0]).parent_path();
+    auto exe_dir = std::filesystem::current_path();
     auto rf_path = exe_dir / "hyperion_recent.txt";
     std::ofstream out(rf_path);
     for (auto& rf : recent_files_)
