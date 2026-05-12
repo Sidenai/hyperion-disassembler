@@ -254,6 +254,156 @@ int l_goto(lua_State* L) {
     return 0;
 }
 
+int l_get_comment(lua_State* L) {
+    auto* db = get_db(L);
+    if (!db) { lua_pushstring(L, ""); return 1; }
+    va_t addr = static_cast<va_t>(luaL_checkinteger(L, 1));
+    auto it = db->comments.find(addr);
+    if (it != db->comments.end())
+        lua_pushstring(L, it->second.c_str());
+    else
+        lua_pushstring(L, "");
+    return 1;
+}
+
+int l_get_string(lua_State* L) {
+    auto* db = get_db(L);
+    if (!db) { lua_pushnil(L); return 1; }
+    va_t addr = static_cast<va_t>(luaL_checkinteger(L, 1));
+    for (auto& [sa, ss] : db->strings) {
+        if (sa == addr) {
+            lua_pushstring(L, ss.c_str());
+            return 1;
+        }
+    }
+    lua_pushnil(L);
+    return 1;
+}
+
+int l_get_image_base(lua_State* L) {
+    auto* db = get_db(L);
+    if (!db) { lua_pushinteger(L, 0); return 1; }
+    lua_pushinteger(L, static_cast<lua_Integer>(db->image_base));
+    return 1;
+}
+
+int l_get_arch(lua_State* L) {
+    auto* img = get_img(L);
+    if (!img) { lua_pushstring(L, "unknown"); return 1; }
+    switch (img->arch) {
+    case Arch::X86:   lua_pushstring(L, "x86");   break;
+    case Arch::X64:   lua_pushstring(L, "x64");   break;
+    case Arch::ARM:   lua_pushstring(L, "arm");   break;
+    case Arch::ARM64: lua_pushstring(L, "arm64"); break;
+    case Arch::MIPS:  lua_pushstring(L, "mips");  break;
+    case Arch::PPC:   lua_pushstring(L, "ppc");   break;
+    default:          lua_pushstring(L, "unknown"); break;
+    }
+    return 1;
+}
+
+int l_get_segments(lua_State* L) {
+    auto* img = get_img(L);
+    if (!img) { lua_newtable(L); return 1; }
+    lua_newtable(L);
+    int idx = 1;
+    for (auto& seg : img->segments) {
+        lua_newtable(L);
+        lua_pushstring(L, seg.name.c_str());
+        lua_setfield(L, -2, "name");
+        lua_pushinteger(L, static_cast<lua_Integer>(seg.va));
+        lua_setfield(L, -2, "addr");
+        lua_pushinteger(L, static_cast<lua_Integer>(seg.data.size()));
+        lua_setfield(L, -2, "size");
+        lua_pushinteger(L, static_cast<lua_Integer>(seg.flags));
+        lua_setfield(L, -2, "flags");
+        lua_rawseti(L, -2, idx++);
+    }
+    return 1;
+}
+
+int l_get_cursor(lua_State* L) {
+    // The cursor is held by DisasmView; we expose it via a registry pointer set by App
+    lua_getfield(L, LUA_REGISTRYINDEX, "__hype_cursor");
+    auto* cur = static_cast<va_t*>(lua_touserdata(L, -1));
+    lua_pop(L, 1);
+    if (!cur) { lua_pushinteger(L, 0); return 1; }
+    lua_pushinteger(L, static_cast<lua_Integer>(*cur));
+    return 1;
+}
+
+int l_create_function(lua_State* L) {
+    auto* db = get_db(L);
+    if (!db) return 0;
+    va_t addr = static_cast<va_t>(luaL_checkinteger(L, 1));
+    std::lock_guard lk(db->mtx);
+    if (!db->funcs.count(addr)) {
+        Function f;
+        f.entry = addr;
+        f.name = fmt::format("sub_{:X}", addr - db->image_base);
+        db->funcs[addr] = std::move(f);
+        db->names[addr] = db->funcs[addr].name;
+    }
+    return 0;
+}
+
+// -----------------------------------------------------------------------
+// open_results(title, headers_table, rows_table)
+//   headers_table  : {"Col1", "Col2", ...}
+//   rows_table     : { {addr=0x..., cols={"v1","v2",...}}, ... }
+// -----------------------------------------------------------------------
+int l_open_results(lua_State* L) {
+    auto* eng = get_engine(L);
+    if (!eng) return 0;
+
+    const char* title = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TTABLE);
+    luaL_checktype(L, 3, LUA_TTABLE);
+
+    ResultsWindow w;
+    w.title = title;
+
+    // Read headers
+    int nhdr = static_cast<int>(lua_rawlen(L, 2));
+    for (int i = 1; i <= nhdr; ++i) {
+        lua_rawgeti(L, 2, i);
+        const char* s = lua_tostring(L, -1);
+        w.headers.push_back(s ? s : "");
+        lua_pop(L, 1);
+    }
+
+    // Read rows
+    int nrows = static_cast<int>(lua_rawlen(L, 3));
+    for (int i = 1; i <= nrows; ++i) {
+        lua_rawgeti(L, 3, i);            // push row table
+        if (!lua_istable(L, -1)) { lua_pop(L, 1); continue; }
+
+        ResultsRow row;
+
+        lua_getfield(L, -1, "addr");
+        row.addr = static_cast<va_t>(lua_tointeger(L, -1));
+        lua_pop(L, 1);
+
+        lua_getfield(L, -1, "cols");     // push cols table
+        if (lua_istable(L, -1)) {
+            int ncols = static_cast<int>(lua_rawlen(L, -1));
+            for (int c = 1; c <= ncols; ++c) {
+                lua_rawgeti(L, -1, c);
+                const char* s = lua_tostring(L, -1);
+                row.cols.push_back(s ? s : "");
+                lua_pop(L, 1);
+            }
+        }
+        lua_pop(L, 1);                   // pop cols table
+        lua_pop(L, 1);                   // pop row table
+
+        w.rows.push_back(std::move(row));
+    }
+
+    eng->push_result_window(std::move(w));
+    return 0;
+}
+
 // -----------------------------------------------------------------------
 // Plugin registration Lua API
 // -----------------------------------------------------------------------
@@ -369,16 +519,24 @@ void LuaEngine::register_api() {
     lua_setfield(L_, LUA_REGISTRYINDEX, "__hype_nav");
 
     // Core API
-    lua_register(L_, "get_name",    l_get_name);
-    lua_register(L_, "set_name",    l_set_name);
-    lua_register(L_, "get_func",    l_get_func);
-    lua_register(L_, "get_insn",    l_get_insn);
-    lua_register(L_, "get_bytes",   l_get_bytes);
-    lua_register(L_, "set_comment", l_set_comment);
-    lua_register(L_, "get_xrefs_to", l_get_xrefs_to);
-    lua_register(L_, "get_functions", l_get_functions);
-    lua_register(L_, "print",       l_print);
-    lua_register(L_, "goto_addr",   l_goto);
+    lua_register(L_, "get_name",       l_get_name);
+    lua_register(L_, "set_name",       l_set_name);
+    lua_register(L_, "get_func",       l_get_func);
+    lua_register(L_, "get_insn",       l_get_insn);
+    lua_register(L_, "get_bytes",      l_get_bytes);
+    lua_register(L_, "set_comment",    l_set_comment);
+    lua_register(L_, "get_comment",    l_get_comment);
+    lua_register(L_, "get_xrefs_to",   l_get_xrefs_to);
+    lua_register(L_, "get_functions",  l_get_functions);
+    lua_register(L_, "print",          l_print);
+    lua_register(L_, "goto_addr",      l_goto);
+    lua_register(L_, "get_string",     l_get_string);
+    lua_register(L_, "get_image_base", l_get_image_base);
+    lua_register(L_, "get_arch",       l_get_arch);
+    lua_register(L_, "get_segments",   l_get_segments);
+    lua_register(L_, "get_cursor",     l_get_cursor);
+    lua_register(L_, "create_function",l_create_function);
+    lua_register(L_, "open_results",   l_open_results);
 
     // Plugin registration API
     lua_register(L_, "register_plugin",               l_register_plugin);
@@ -398,16 +556,24 @@ void LuaEngine::load_plugins(const std::filesystem::path& dir) {
     lua_setfield(L_, LUA_REGISTRYINDEX, "__hype_output");
 
     // Register plugin API functions (safe even with null db_/img_)
-    lua_register(L_, "get_name",    l_get_name);
-    lua_register(L_, "set_name",    l_set_name);
-    lua_register(L_, "get_func",    l_get_func);
-    lua_register(L_, "get_insn",    l_get_insn);
-    lua_register(L_, "get_bytes",   l_get_bytes);
-    lua_register(L_, "set_comment", l_set_comment);
-    lua_register(L_, "get_xrefs_to", l_get_xrefs_to);
-    lua_register(L_, "get_functions", l_get_functions);
-    lua_register(L_, "print",       l_print);
-    lua_register(L_, "goto_addr",   l_goto);
+    lua_register(L_, "get_name",       l_get_name);
+    lua_register(L_, "set_name",       l_set_name);
+    lua_register(L_, "get_func",       l_get_func);
+    lua_register(L_, "get_insn",       l_get_insn);
+    lua_register(L_, "get_bytes",      l_get_bytes);
+    lua_register(L_, "set_comment",    l_set_comment);
+    lua_register(L_, "get_comment",    l_get_comment);
+    lua_register(L_, "get_xrefs_to",   l_get_xrefs_to);
+    lua_register(L_, "get_functions",  l_get_functions);
+    lua_register(L_, "print",          l_print);
+    lua_register(L_, "goto_addr",      l_goto);
+    lua_register(L_, "get_string",     l_get_string);
+    lua_register(L_, "get_image_base", l_get_image_base);
+    lua_register(L_, "get_arch",       l_get_arch);
+    lua_register(L_, "get_segments",   l_get_segments);
+    lua_register(L_, "get_cursor",     l_get_cursor);
+    lua_register(L_, "create_function",l_create_function);
+    lua_register(L_, "open_results",   l_open_results);
     lua_register(L_, "register_plugin",               l_register_plugin);
     lua_register(L_, "register_menu_item",            l_register_menu_item);
     lua_register(L_, "register_hotkey",               l_register_hotkey);
@@ -467,14 +633,8 @@ void LuaEngine::invoke_menu_item(int plugin_idx, int item_idx) {
         output_ += std::string("[plugin error] ") + (msg ? msg : "unknown") + "\n";
         lua_pop(L_, 1);
     }
-    // output_ is forwarded to the Script Console by scriptc_ which reads it via execute()
-    // For plugin callbacks we flush directly via the output panel pointer stored in registry
-    lua_getfield(L_, LUA_REGISTRYINDEX, "__hype_output");
-    auto* out_ptr = static_cast<std::string*>(lua_touserdata(L_, -1));
-    lua_pop(L_, 1);
-    if (out_ptr && out_ptr != &output_) {
-        *out_ptr += output_;
-    }
+    // output_ holds everything l_print wrote during the call.
+    // The caller (App::render_menubar) reads it via last_output().
 }
 
 void LuaEngine::run_analysis_complete_callbacks() {

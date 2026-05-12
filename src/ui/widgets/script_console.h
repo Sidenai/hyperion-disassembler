@@ -11,6 +11,9 @@ class ScriptConsole {
 public:
     void set_engine(LuaEngine* eng) { engine_ = eng; }
     void set_nav(std::function<void(va_t)> cb) { nav_cb_ = std::move(cb); }
+    void append_output(const std::string& text) {
+        if (!text.empty()) { output_.push_back(text); scroll_bottom_ = true; }
+    }
     void render();
 
 private:
