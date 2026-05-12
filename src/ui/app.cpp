@@ -302,7 +302,7 @@ void App::open_file(const char* path) {
                 out_.log(fmt::format(".NET binary: {} types, {} methods",
                     dnl.image().types.size(), dnl.image().methods.size()));
                 // populate DB with IL methods instead of running native analysis
-                auto& db = const_cast<AnalysisDB&>(analyzer_ ? analyzer_->db() : *(new AnalysisDB()));
+                (void)0; // .NET path - no native analysis needed
                 // create a minimal analyzer just for the DB
                 busy_ = false;
                 analysis_done_ = false;

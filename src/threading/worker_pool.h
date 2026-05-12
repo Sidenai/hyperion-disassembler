@@ -36,7 +36,7 @@ public:
     unsigned thread_count() const { return static_cast<unsigned>(workers_.size()); }
 
 private:
-    std::vector<std::jthread>         workers_;
+    std::vector<std::thread>          workers_;
     std::queue<std::function<void()>> queue_;
     std::mutex                        mtx_;
     std::condition_variable           cv_;
