@@ -26,6 +26,22 @@ struct PluginEntry {
     std::string error_msg;
 };
 
+// One row in a plugin results window.
+struct ResultsRow {
+    va_t                     addr;   // address to navigate to when clicked
+    std::vector<std::string> cols;   // column values (must match headers count)
+};
+
+// A results window opened by a plugin via open_results().
+struct ResultsWindow {
+    std::string              title;
+    std::vector<std::string> headers;
+    std::vector<ResultsRow>  rows;
+    bool                     open    = true;
+    char                     filter[256] = {};
+    int                      selected = -1;
+};
+
 class LuaEngine {
 public:
     LuaEngine();
@@ -45,10 +61,18 @@ public:
     const std::vector<PluginEntry>& plugins() const { return plugins_; }
     std::vector<PluginEntry>&       plugins()        { return plugins_; }
 
+    // Results windows — rendered by App each frame
+    std::vector<ResultsWindow>&       result_windows()       { return result_windows_; }
+    const std::vector<ResultsWindow>& result_windows() const { return result_windows_; }
+
+    // Returns whatever l_print accumulated during the last invoke_menu_item call.
+    const std::string& last_output() const { return output_; }
+
     // Called by Lua C-function wrappers inside the anonymous namespace
     const std::string& current_plugin_name() const { return current_plugin_; }
     void add_hotkey(const std::string& key_str, int ref)  { hotkeys_.emplace_back(key_str, ref); }
     void add_analysis_cb(int ref)                          { on_analysis_cbs_.push_back(ref); }
+    void push_result_window(ResultsWindow w)               { result_windows_.push_back(std::move(w)); }
 
 private:
     void register_api();
@@ -64,6 +88,9 @@ private:
     std::vector<std::pair<std::string, int>>   hotkeys_;          // {key_string, cb_ref}
     std::vector<int>                           on_analysis_cbs_;  // Lua registry refs
     std::string                                current_plugin_;   // set while loading a .lua file
+
+    // Results windows
+    std::vector<ResultsWindow>                 result_windows_;
 };
 
 } // namespace hype

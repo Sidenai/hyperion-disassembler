@@ -80,6 +80,7 @@ private:
     void rebuild_nav_band();
     void render_bg_image();
     void render_plugin_manager();
+    void render_results_windows();
 
     Renderer         renderer_;
     WorkerPool       pool_;
