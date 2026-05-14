@@ -1,5 +1,6 @@
 #include "disasm_view.h"
 #include "stack_frame_view.h"
+#include "debugger/debug_engine.h"
 #include "ui/theme.h"
 #include "ui/fonts.h"
 #include <fmt/format.h>
@@ -11,6 +12,8 @@ void DisasmView::goto_addr(va_t addr) {
     scroll_to_ = addr;
     scroll_pending_ = true;
     cursor_ = addr;
+    if (live_mode_)
+        live_base_ = addr;
 }
 
 void DisasmView::rebuild() {
@@ -268,6 +271,36 @@ void DisasmView::update_reg_highlight() {
 void DisasmView::render() {
     ImGui::Begin("Disassembly");
     if (!db_ || !img_) { ImGui::TextDisabled("No binary loaded"); ImGui::End(); return; }
+
+    if (dbg_eng_ && dbg_eng_->is_attached() && !dbg_eng_->is_running()) {
+        if (!live_mode_ || scroll_pending_) {
+            va_t center = scroll_pending_ ? scroll_to_ : (live_base_ ? live_base_ : debug_rip_);
+            va_t read_start = center > 0x200 ? center - 0x200 : 0;
+            u8 buf[0x1000];
+            if (dbg_eng_->read_memory(read_start, buf, sizeof(buf))) {
+                Disassembler dis;
+                dis.set_arch(Arch::X64);
+                live_insns_ = dis.decode_range(read_start, buf, sizeof(buf));
+                live_base_ = read_start;
+            }
+            live_mode_ = true;
+            scroll_pending_ = false;
+        }
+
+        if (g_fonts.mono) ImGui::PushFont(g_fonts.mono);
+        float lh = ImGui::GetTextLineHeightWithSpacing();
+        ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.4f, 1.0f), "LIVE");
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%d insns @ %016llX)", (int)live_insns_.size(), (unsigned long long)live_base_);
+        ImGui::Separator();
+        render_live(lh);
+        if (g_fonts.mono) ImGui::PopFont();
+        ImGui::End();
+        return;
+    }
+
+    live_mode_ = false;
+
     if (dirty_) rebuild();
     if (addrs_.empty()) { ImGui::TextDisabled("No instructions"); ImGui::End(); return; }
 
@@ -499,6 +532,20 @@ void DisasmView::render_line(int idx, const Insn& insn, float lh) {
         dl->AddRectFilled(pos, ImVec2(pos.x + avail_w, pos.y + lh), IM_COL32(40, 55, 85, 255));
     else if (reg_hl)
         dl->AddRectFilled(pos, ImVec2(pos.x + avail_w, pos.y + lh), IM_COL32(35, 45, 55, 180));
+
+    // debug: RIP indicator (yellow)
+    if (debug_rip_ && insn.addr == debug_rip_)
+        dl->AddRectFilled(pos, ImVec2(pos.x + avail_w, pos.y + lh), IM_COL32(80, 80, 20, 200));
+
+    // debug: breakpoint indicator (red dot)
+    if (debug_bps_) {
+        for (va_t bp : *debug_bps_) {
+            if (bp == insn.addr) {
+                dl->AddCircleFilled(ImVec2(pos.x + 6, pos.y + lh * 0.5f), 4.0f, IM_COL32(220, 50, 50, 255));
+                break;
+            }
+        }
+    }
 
     float x = pos.x + 4;
     float y = pos.y;
@@ -756,6 +803,141 @@ void DisasmView::render_line(int idx, const Insn& insn, float lh) {
             ImGui::EndMenu();
         }
         ImGui::EndPopup();
+    }
+
+    ImGui::PopID();
+}
+
+void DisasmView::render_live(float lh) {
+    ImGui::BeginChild("##dasm_live", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+
+    int total = static_cast<int>(live_insns_.size());
+    if (total == 0) {
+        ImGui::TextDisabled("No instructions decoded");
+        ImGui::EndChild();
+        return;
+    }
+
+    // scroll to RIP
+    if (debug_rip_) {
+        for (int i = 0; i < total; ++i) {
+            if (live_insns_[i].addr == debug_rip_) {
+                float target_y = i * lh;
+                float max_scroll = total * lh - ImGui::GetWindowHeight();
+                float scroll = std::clamp(target_y - ImGui::GetWindowHeight() * 0.3f, 0.f, std::max(0.f, max_scroll));
+                ImGui::SetScrollY(scroll);
+                break;
+            }
+        }
+    }
+
+    ImGuiListClipper clip;
+    clip.Begin(total, lh);
+    while (clip.Step()) {
+        for (int i = clip.DisplayStart; i < clip.DisplayEnd; ++i)
+            render_live_line(i, live_insns_[i], lh);
+    }
+
+    // navigation: scroll near edges reads more memory
+    float sy = ImGui::GetScrollY();
+    float max_sy = ImGui::GetScrollMaxY();
+    if (max_sy > 0) {
+        if (sy <= 0 && live_base_ > 0x200) {
+            va_t new_base = live_base_ - 0x800;
+            u8 buf[0x1000];
+            if (dbg_eng_->read_memory(new_base, buf, sizeof(buf))) {
+                Disassembler dis;
+                dis.set_arch(Arch::X64);
+                live_insns_ = dis.decode_range(new_base, buf, sizeof(buf));
+                live_base_ = new_base;
+            }
+        } else if (sy >= max_sy) {
+            va_t new_base = live_base_ + 0x800;
+            u8 buf[0x1000];
+            if (dbg_eng_->read_memory(new_base, buf, sizeof(buf))) {
+                Disassembler dis;
+                dis.set_arch(Arch::X64);
+                live_insns_ = dis.decode_range(new_base, buf, sizeof(buf));
+                live_base_ = new_base;
+            }
+        }
+    }
+
+    ImGui::EndChild();
+}
+
+void DisasmView::render_live_line(int idx, const Insn& insn, float lh) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    float avail_w = ImGui::GetContentRegionAvail().x;
+    if (avail_w < 100) avail_w = 1200;
+    bool is_cursor = (insn.addr == cursor_);
+    bool is_rip = (debug_rip_ && insn.addr == debug_rip_);
+
+    ImGui::PushID(static_cast<int>(insn.addr & 0x7FFFFFFF) ^ (idx << 16));
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+
+    if (is_rip)
+        dl->AddRectFilled(pos, ImVec2(pos.x + avail_w, pos.y + lh), IM_COL32(80, 80, 20, 200));
+    else if (is_cursor)
+        dl->AddRectFilled(pos, ImVec2(pos.x + avail_w, pos.y + lh), IM_COL32(40, 55, 85, 255));
+
+    if (debug_bps_) {
+        for (va_t bp : *debug_bps_) {
+            if (bp == insn.addr) {
+                dl->AddCircleFilled(ImVec2(pos.x + 6, pos.y + lh * 0.5f), 4.0f, IM_COL32(220, 50, 50, 255));
+                break;
+            }
+        }
+    }
+
+    float x = pos.x + 16;
+    float y = pos.y;
+
+    if (is_rip) {
+        dl->AddText(ImVec2(pos.x + 2, y), IM_COL32(255, 220, 50, 255), ">");
+    }
+
+    auto addr_s = fmt::format("{:016X}", insn.addr);
+    dl->AddText(ImVec2(x, y), is_cursor ? IM_COL32(130, 190, 255, 255) : col::addr(), addr_s.c_str());
+    x += ImGui::CalcTextSize("0000000000000000").x + 14;
+
+    std::string hex;
+    int nb = std::min<int>(insn.len, 6);
+    for (int b = 0; b < nb; ++b) hex += fmt::format("{:02X} ", insn.bytes[b]);
+    if (insn.len > 6) hex += "..";
+    dl->AddText(ImVec2(x, y), IM_COL32(85, 85, 95, 255), hex.c_str());
+    x += ImGui::CalcTextSize("00 00 00 00 00 00 ..").x + 10;
+
+    ImU32 mc = col::mnem();
+    switch (insn.type) {
+        case InsnType::Call:    mc = IM_COL32(255, 200, 80, 255); break;
+        case InsnType::Jmp:    mc = IM_COL32(80, 220, 80, 255); break;
+        case InsnType::Jcc:    mc = IM_COL32(80, 200, 130, 255); break;
+        case InsnType::Ret:    mc = IM_COL32(230, 90, 90, 255); break;
+        case InsnType::Nop:    mc = IM_COL32(70, 70, 70, 255); break;
+        case InsnType::Push:
+        case InsnType::Pop:    mc = IM_COL32(150, 150, 195, 255); break;
+        case InsnType::Int:
+        case InsnType::Syscall: mc = IM_COL32(210, 90, 210, 255); break;
+        default: break;
+    }
+    dl->AddText(ImVec2(x, y), mc, insn.mnemonic);
+    x += 68;
+
+    if (insn.op_str[0])
+        dl->AddText(ImVec2(x, y), col::reg(), insn.op_str);
+
+    ImGui::InvisibleButton("##ll", ImVec2(avail_w, lh));
+
+    if (ImGui::IsItemHovered() && !is_cursor)
+        dl->AddRectFilled(pos, ImVec2(pos.x + avail_w, pos.y + lh), IM_COL32(30, 40, 60, 140));
+
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
+        cursor_ = insn.addr;
+
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && ImGui::GetIO().KeyShift) {
+        if (dbg_eng_)
+            dbg_eng_->set_breakpoint(insn.addr);
     }
 
     ImGui::PopID();
