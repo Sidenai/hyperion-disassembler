@@ -12,6 +12,7 @@
 namespace hype {
 
 class StackFrameView;
+class DebugEngine;
 
 class DisasmView {
 public:
@@ -23,6 +24,8 @@ public:
     void set_sig_cb(SigCB cb) { sig_cb_ = std::move(cb); }
     void set_undo(UndoManager* u) { undo_ = u; }
     void set_stack_frame_view(StackFrameView* sfv) { sfv_ = sfv; }
+    void set_debug_state(va_t rip, const std::vector<va_t>* bps) { debug_rip_ = rip; debug_bps_ = bps; }
+    void set_debug_engine(DebugEngine* eng) { dbg_eng_ = eng; }
     void goto_addr(va_t addr);
     void render();
     va_t cursor() const { return cursor_; }
@@ -38,13 +41,16 @@ public:
 private:
     void rebuild();
     void render_line(int idx, const Insn& insn, float lh);
+    void render_live_line(int idx, const Insn& insn, float lh);
     void render_data_line(const DataItem& item, float lh);
+    void render_live(float lh);
     void update_reg_highlight();
 
     AnalysisDB*       db_ = nullptr;
     PEImage*          img_ = nullptr;
     StackFrameView*   sfv_ = nullptr;
     UndoManager*      undo_ = nullptr;
+    DebugEngine*      dbg_eng_ = nullptr;
     NavCB             nav_;
     SigCB             sig_cb_;
     va_t              cursor_ = 0;
@@ -56,6 +62,12 @@ private:
     u16               highlighted_reg_ = 0;
     std::unordered_set<va_t> reg_highlight_addrs_;
     std::unordered_map<va_t, const std::string*> str_map_;
+    va_t              debug_rip_ = 0;
+    const std::vector<va_t>* debug_bps_ = nullptr;
+
+    bool              live_mode_ = false;
+    std::vector<Insn> live_insns_;
+    va_t              live_base_ = 0;
 };
 
 }
