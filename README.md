@@ -7,6 +7,8 @@ A native multi-architecture disassembler and binary analysis tool. Supports PE, 
 
 Single statically-linked executable. No installer, no runtime dependencies. Under 3MB.
 
+<img width="3436" height="1362" alt="image" src="https://github.com/user-attachments/assets/89ffa137-ed79-4d6a-b9a6-61324192916b" />
+
 ## Community
 
 - [Discord](https://discord.gg/yjym2b7A)
