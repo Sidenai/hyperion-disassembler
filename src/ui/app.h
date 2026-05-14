@@ -31,6 +31,7 @@
 #include "ui/widgets/script_console.h"
 #include "ui/widgets/sigmaker.h"
 #include "ui/widgets/settings_panel.h"
+#include "ui/widgets/debugger_panel.h"
 #include "scripting/lua_engine.h"
 #include <memory>
 #include <string>
@@ -112,6 +113,7 @@ private:
     ScriptConsole    scriptc_;
     SigMaker         sigmaker_;
     SettingsPanel    settings_panel_;
+    DebuggerPanel    dbgp_;
 
     LuaEngine        lua_;
     PDBLoader        pdb_;

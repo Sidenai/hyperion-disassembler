@@ -126,6 +126,8 @@ App::App() : pool_(std::thread::hardware_concurrency()) {
     diffv_.set_nav(nav);
     clsv_.set_nav(nav);
     scriptc_.set_nav(nav);
+    dbgp_.set_nav([this](va_t a) { navigate_to(a); sync_panels(a); });
+    dbgp_.set_open_cb([this](const std::string& path) { open_file(path.c_str()); });
     load_recent_files();
     last_autosave_ = std::chrono::steady_clock::now();
 }
@@ -207,6 +209,19 @@ int App::run() {
         handle_keys();
         render_menubar();
 
+        // update debug indicators in disasm
+        if (dbgp_.engine().is_attached() && !dbgp_.engine().is_running()) {
+            static std::vector<va_t> bp_addrs;
+            bp_addrs.clear();
+            for (auto& bp : dbgp_.engine().breakpoints())
+                if (bp.enabled) bp_addrs.push_back(bp.addr);
+            dv_.set_debug_state(dbgp_.current_rip(), &bp_addrs);
+            dv_.set_debug_engine(&dbgp_.engine());
+        } else {
+            dv_.set_debug_state(0, nullptr);
+            dv_.set_debug_engine(&dbgp_.engine());
+        }
+
         dv_.render();
         hv_.render();
         pv_.render();
@@ -227,6 +242,7 @@ int App::run() {
         scriptc_.render();
         sigmaker_.render();
         settings_panel_.render();
+        dbgp_.render();
 
         if (settings_panel_.theme_changed()) {
             auto& ct = settings_panel_.custom_theme();
@@ -611,6 +627,8 @@ void App::render_menubar() {
             if (ImGui::MenuItem("Script Console", nullptr, false, true)) {}
             if (ImGui::MenuItem("SigMaker", "Ctrl+Shift+S", false, analyzer_ != nullptr))
                 sigmaker_.visible() = true;
+            if (ImGui::MenuItem("Debugger", nullptr, false, true))
+                dbgp_.visible() = true;
             ImGui::Separator();
             if (ImGui::BeginMenu("Theme")) {
                 if (ImGui::MenuItem("Binary Ninja", nullptr, g_theme == Theme::BinaryNinja)) {
@@ -746,6 +764,24 @@ void App::handle_keys() {
     }
     if (io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) nav_back();
     if (io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_RightArrow)) nav_fwd();
+
+    // Debugger shortcuts
+    if (ImGui::IsKeyPressed(ImGuiKey_F2) && !io.KeyCtrl) {
+        dbgp_.toggle_breakpoint(dv_.cursor());
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_F7) && !io.KeyCtrl) {
+        dbgp_.on_step_into();
+        dbgp_.visible() = true;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_F8) && !io.KeyCtrl) {
+        dbgp_.on_step_over();
+        dbgp_.visible() = true;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_F9) && !io.KeyCtrl) {
+        if (dbgp_.engine().is_attached())
+            dbgp_.on_run();
+        dbgp_.visible() = true;
+    }
 
     if (ImGui::IsKeyPressed(ImGuiKey_Tab) && !io.KeyCtrl)
         sync_panels(dv_.cursor());
