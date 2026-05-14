@@ -151,6 +151,18 @@ int App::run() {
     out_.log("Hyperion v" HYPERION_VERSION " ready");
     out_.log("Drop a PE file or use File > Open (Ctrl+O)");
 
+    // Load plugins from plugins/ dir next to the executable (main thread, pre-loop)
+    {
+        auto plugin_dir = std::filesystem::path("plugins");
+        lua_.load_plugins(plugin_dir);
+        auto& loaded = lua_.plugins();
+        if (!loaded.empty()) {
+            int ok = 0, bad = 0;
+            for (auto& p : loaded) (p.error ? bad : ok)++;
+            out_.log(fmt::format("Plugins: {} loaded, {} error(s)", ok, bad));
+        }
+    }
+
     while (!renderer_.should_close()) {
         renderer_.begin_frame();
 
@@ -198,6 +210,8 @@ int App::run() {
             sigmaker_.set_data(&db, img_.get());
             sigmaker_.set_nav([this](va_t a) { navigate_to(a); sync_panels(a); });
             rebuild_nav_band();
+            // Fire on_analysis_complete plugin callbacks
+            lua_.run_analysis_complete_callbacks();
         }
 
         if (diff_done_.exchange(false)) {
@@ -243,6 +257,9 @@ int App::run() {
         sigmaker_.render();
         settings_panel_.render();
         dbgp_.render();
+
+        if (show_plugin_manager_) render_plugin_manager();
+        render_results_windows();
 
         if (settings_panel_.theme_changed()) {
             auto& ct = settings_panel_.custom_theme();
@@ -401,7 +418,11 @@ void App::open_file(const char* path) {
         }
     } else if (magic == 0x464C457F) {
         result = elf_loader_.load(path);
-    } else {
+    } else if (magic == 0xFEEDFACE || magic == 0xFEEDFACF || 
+               magic == 0xCEFAEDFE || magic == 0xCFAFFEED) {
+        out_.log("Detected Mach-O binary (macOS)");
+        result = macho_loader_.load(path);
+    } else
         out_.log("ERROR: unsupported file format (expected PE or ELF)");
         return;
     }
@@ -663,6 +684,57 @@ void App::render_menubar() {
             ImGui::EndMenu();
         }
 
+        // ---- Plugins menu ----
+        if (ImGui::BeginMenu("Plugins")) {
+            if (ImGui::MenuItem("Plugin Manager..."))
+                show_plugin_manager_ = true;
+            ImGui::Separator();
+            auto& plgs = lua_.plugins();
+            if (plgs.empty()) {
+                ImGui::TextDisabled("No plugins loaded");
+                ImGui::TextDisabled("Place .lua files in plugins/");
+            }
+            for (int pi = 0; pi < static_cast<int>(plgs.size()); ++pi) {
+                auto& plg = plgs[static_cast<size_t>(pi)];
+                if (plg.error) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.4f, 0.4f, 1.f));
+                    ImGui::TextDisabled("[!] %s", plg.name.c_str());
+                    ImGui::PopStyleColor();
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s", plg.error_msg.c_str());
+                    continue;
+                }
+                if (plg.items.size() == 1) {
+                    // Single action — flat menu item labelled by the action
+                    if (ImGui::MenuItem(plg.items[0].label.c_str())) {
+                        lua_.invoke_menu_item(pi, 0);
+                        if (!lua_.last_output().empty()) {
+                            scriptc_.append_output(lua_.last_output());
+                            ImGui::SetWindowFocus("Script Console");
+                        }
+                    }
+                } else if (!plg.items.empty()) {
+                    // Multiple actions — submenu labelled by the plugin name
+                    if (ImGui::BeginMenu(plg.name.c_str())) {
+                        for (int ii = 0; ii < static_cast<int>(plg.items.size()); ++ii) {
+                            if (ImGui::MenuItem(plg.items[static_cast<size_t>(ii)].label.c_str())) {
+                                lua_.invoke_menu_item(pi, ii);
+                                if (!lua_.last_output().empty()) {
+                                    scriptc_.append_output(lua_.last_output());
+                                    ImGui::SetWindowFocus("Script Console");
+                                }
+                            }
+                        }
+                        ImGui::EndMenu();
+                    }
+                } else {
+                    // Plugin registered but added no menu items
+                    ImGui::TextDisabled("%s", plg.name.c_str());
+                }
+            }
+            ImGui::EndMenu();
+        }
+
         float w = ImGui::GetWindowWidth();
         if (busy_) {
             ImGui::SameLine(w - 120);
@@ -785,6 +857,9 @@ void App::handle_keys() {
 
     if (ImGui::IsKeyPressed(ImGuiKey_Tab) && !io.KeyCtrl)
         sync_panels(dv_.cursor());
+
+    // Plugin hotkeys (checked last, after built-in keys)
+    lua_.check_hotkeys();
 
     if (kb.check("decompile")) {
         va_t func = find_func_for(dv_.cursor());
@@ -1684,4 +1759,170 @@ void App::export_asm() {
     out_.log(fmt::format("Exported: {}", p.string()));
 }
 
+void App::render_plugin_manager() {
+    ImGui::SetNextWindowSize(ImVec2(600, 400), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("Plugin Manager", &show_plugin_manager_)) {
+        ImGui::End();
+        return;
+    }
+
+    auto& plgs = lua_.plugins();
+
+    ImGui::TextDisabled("Plugins directory: plugins/  (%d loaded)", static_cast<int>(plgs.size()));
+    ImGui::Separator();
+
+    if (plgs.empty()) {
+        ImGui::TextDisabled("No plugins found.");
+        ImGui::TextDisabled("Place .lua files in the plugins/ directory next to the executable.");
+    } else {
+        ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                ImGuiTableFlags_ScrollY | ImGuiTableFlags_SizingStretchProp;
+        if (ImGui::BeginTable("##plugins_tbl", 4, flags, ImVec2(0, -30))) {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("Name",    ImGuiTableColumnFlags_WidthStretch, 0.20f);
+            ImGui::TableSetupColumn("Description", ImGuiTableColumnFlags_WidthStretch, 0.40f);
+            ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, 60.f);
+            ImGui::TableSetupColumn("Status",  ImGuiTableColumnFlags_WidthFixed, 120.f);
+            ImGui::TableHeadersRow();
+
+            for (int pi = 0; pi < static_cast<int>(plgs.size()); ++pi) {
+                auto& plg = plgs[static_cast<size_t>(pi)];
+                ImGui::TableNextRow();
+
+                // Name
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextUnformatted(plg.name.c_str());
+
+                // Description
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextUnformatted(plg.desc.empty() ? "—" : plg.desc.c_str());
+
+                // Action count
+                ImGui::TableSetColumnIndex(2);
+                ImGui::Text("%d", static_cast<int>(plg.items.size()));
+
+                // Status
+                ImGui::TableSetColumnIndex(3);
+                if (plg.error) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.4f, 0.4f, 1.f));
+                    ImGui::TextUnformatted("Error");
+                    ImGui::PopStyleColor();
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s", plg.error_msg.c_str());
+                } else {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.4f, 1.f, 0.5f, 1.f));
+                    ImGui::TextUnformatted("OK");
+                    ImGui::PopStyleColor();
+                }
+            }
+            ImGui::EndTable();
+        }
+    }
+
+    ImGui::End();
 }
+
+void App::render_results_windows() {
+    auto& windows = lua_.result_windows();
+    for (auto& w : windows) {
+        if (!w.open) continue;
+
+        ImGui::SetNextWindowSize(ImVec2(820, 480), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(400, 200), ImVec2(FLT_MAX, FLT_MAX));
+
+        ImGuiWindowFlags wflags = ImGuiWindowFlags_None;
+        if (!ImGui::Begin(w.title.c_str(), &w.open, wflags)) {
+            ImGui::End();
+            continue;
+        }
+
+        // Search / filter bar
+        ImGui::SetNextItemWidth(-1.f);
+        ImGui::InputTextWithHint("##rw_filter", "Filter results...", w.filter, sizeof(w.filter));
+        ImGui::Separator();
+
+        std::string filter_lower = w.filter;
+        for (auto& c : filter_lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+
+        // Count visible rows for the footer
+        int visible = 0;
+
+        ImGuiTableFlags tflags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                                 ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable |
+                                 ImGuiTableFlags_SizingStretchProp;
+
+        // +1 column for the address
+        int ncols = static_cast<int>(w.headers.size()) + 1;
+        if (ImGui::BeginTable("##rw_tbl", ncols, tflags, ImVec2(0, -ImGui::GetFrameHeightWithSpacing()))) {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("Address", ImGuiTableColumnFlags_WidthFixed, 110.f);
+            for (auto& h : w.headers)
+                ImGui::TableSetupColumn(h.c_str(), ImGuiTableColumnFlags_WidthStretch);
+            ImGui::TableHeadersRow();
+
+            for (int ri = 0; ri < static_cast<int>(w.rows.size()); ++ri) {
+                auto& row = w.rows[static_cast<size_t>(ri)];
+
+                // Apply filter: check address hex + all col values
+                if (filter_lower.size() > 0) {
+                    char addr_buf[32];
+                    std::snprintf(addr_buf, sizeof(addr_buf), "%llx",
+                        static_cast<unsigned long long>(row.addr));
+                    bool match = (std::string(addr_buf).find(filter_lower) != std::string::npos);
+                    if (!match) {
+                        for (auto& cv : row.cols) {
+                            std::string cvl = cv;
+                            for (auto& c : cvl) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                            if (cvl.find(filter_lower) != std::string::npos) { match = true; break; }
+                        }
+                    }
+                    if (!match) continue;
+                }
+                visible++;
+
+                ImGui::TableNextRow();
+
+                // Address column — clickable
+                ImGui::TableSetColumnIndex(0);
+                char addr_label[48];
+                std::snprintf(addr_label, sizeof(addr_label), "0x%llX##row%d",
+                    static_cast<unsigned long long>(row.addr), ri);
+
+                bool selected = (w.selected == ri);
+                if (ImGui::Selectable(addr_label, selected,
+                        ImGuiSelectableFlags_SpanAllColumns |
+                        ImGuiSelectableFlags_AllowOverlap,
+                        ImVec2(0, 0))) {
+                    w.selected = ri;
+                    if (img_ && analyzer_) {
+                        navigate_to(row.addr);
+                        sync_panels(row.addr);
+                    }
+                }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Click to navigate to 0x%llX",
+                        static_cast<unsigned long long>(row.addr));
+
+                // Data columns
+                for (int ci = 0; ci < static_cast<int>(row.cols.size()); ++ci) {
+                    if (ImGui::TableSetColumnIndex(ci + 1))
+                        ImGui::TextUnformatted(row.cols[static_cast<size_t>(ci)].c_str());
+                }
+            }
+            ImGui::EndTable();
+        }
+
+        // Footer: count
+        ImGui::TextDisabled("%d result(s)", visible);
+
+        ImGui::End();
+    }
+
+    // Remove windows the user closed
+    windows.erase(
+        std::remove_if(windows.begin(), windows.end(),
+            [](const ResultsWindow& w){ return !w.open; }),
+        windows.end());
+}
+
+} // namespace hype
