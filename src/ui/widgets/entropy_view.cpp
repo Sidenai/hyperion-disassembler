@@ -56,7 +56,8 @@ void EntropyView::rebuild_texture(int width, int height) {
     tex_w_ = width;
     tex_h_ = height;
 
-    std::vector<u8> pixels(width * height * 4);
+    std::vector<u8> pixels(static_cast<std::size_t>(width) *
+                           static_cast<std::size_t>(height) * 4u);
 
     float blocks_per_col = static_cast<float>(blocks_.size()) / width;
 
