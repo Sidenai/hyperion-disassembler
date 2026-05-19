@@ -3,7 +3,7 @@
 A native multi-architecture disassembler and binary analysis tool. Supports PE, ELF, Mach-O, and .NET binaries across x86, x64, ARM, ARM64, MIPS, and PPC. Built from scratch in C++20 with ImGui.
 
 [![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord)](https://discord.gg/yCgZUtNH5E)
-[![GitHub](https://img.shields.io/github/stars/mylovereturns/hyperion-disassembler?style=flat&label=Stars)](https://github.com/mylovereturns/hyperion-disassembler)
+[![GitHub](https://img.shields.io/github/stars/Sidenai/hyperion-disassembler?style=flat&label=Stars)](https://github.com/Sidenai/hyperion-disassembler)
 
 Single statically-linked executable. No installer, no runtime dependencies. Under 3MB.
 
@@ -12,7 +12,7 @@ Single statically-linked executable. No installer, no runtime dependencies. Unde
 ## Community
 
 - [Discord](https://discord.gg/yCgZUtNH5E)
-- [GitHub](https://github.com/mylovereturns/hyperion-disassembler)
+- [GitHub](https://github.com/Sidenai/hyperion-disassembler)
 
 ## Supported Formats & Architectures
 
@@ -167,4 +167,6 @@ Roadmap:
 
 ## License
 
-MIT
+MIT - see [LICENSE](LICENSE)
+
+Copyright (c) 2026 - present Siden Technologies Inc.
