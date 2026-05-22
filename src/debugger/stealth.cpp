@@ -4,11 +4,15 @@
 #include "debug_engine.h"
 #include <spdlog/spdlog.h>
 #include <fmt/format.h>
-#include <winternl.h>
 
+#ifdef _WIN32
+#include <winternl.h>
 #pragma comment(lib, "ntdll.lib")
+#endif
 
 namespace hype {
+
+#ifdef _WIN32
 
 namespace {
 
@@ -526,5 +530,23 @@ void DebugEngine::apply_stealth(u32 /*pid*/) {
     hide_debug_object();
     log("Stealth patches applied");
 }
+
+#else
+
+void DebugEngine::apply_stealth(u32 /*pid*/) {}
+void DebugEngine::hide_peb_debugger_flag() {}
+void DebugEngine::fix_heap_flags() {}
+void DebugEngine::hook_nt_query_information() {}
+void DebugEngine::hook_nt_set_information_thread() {}
+void DebugEngine::hook_nt_close() {}
+void DebugEngine::hook_nt_query_object() {}
+void DebugEngine::hook_qpc() {}
+void DebugEngine::hide_debug_object() {}
+va_t DebugEngine::resolve_target_export(const char* /*module*/, const char* /*func*/) { return 0; }
+va_t DebugEngine::alloc_remote(size_t /*size*/) { return 0; }
+bool DebugEngine::install_hook(va_t /*target*/, const u8* /*code*/, size_t /*code_size*/, const char* /*name*/) { return false; }
+void DebugEngine::uninstall_hooks() {}
+
+#endif
 
 }

@@ -61,7 +61,7 @@ if(WIN32)
 endif()
 
 if(APPLE)
-    target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Cocoa" "-framework IOKit")
+    target_link_libraries(${PROJECT_NAME} PRIVATE "-framework Cocoa" "-framework IOKit" "-framework CoreFoundation")
 endif()
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE

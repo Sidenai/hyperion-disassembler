@@ -257,7 +257,8 @@ void Lifter::lift_insn(const Insn& insn, const AnalysisDB& db, PcodeBlock& out) 
     }
     case InsnType::Add: case InsnType::Sub:
     case InsnType::And: case InsnType::Or: case InsnType::Xor:
-    case InsnType::Shl: case InsnType::Shr: {
+    case InsnType::Shl: case InsnType::Shr: case InsnType::Sar:
+    case InsnType::Rol: case InsnType::Ror: {
         auto& dst_op = insn.ops[0];
         Varnode lhs = operand_read(insn, 0, db, out);
         Varnode rhs = operand_read(insn, 1, db, out);
@@ -278,6 +279,9 @@ void Lifter::lift_insn(const Insn& insn, const AnalysisDB& db, PcodeBlock& out) 
         case InsnType::Xor: pop = PcodeOp::XOR; break;
         case InsnType::Shl: pop = PcodeOp::SHIFT_LEFT; break;
         case InsnType::Shr: pop = PcodeOp::SHIFT_RIGHT; break;
+        case InsnType::Sar: pop = PcodeOp::SHIFT_RIGHT; break; // simplified
+        case InsnType::Rol: pop = PcodeOp::SHIFT_LEFT; break;  // simplified
+        case InsnType::Ror: pop = PcodeOp::SHIFT_RIGHT; break; // simplified
         default: break;
         }
         Varnode result = alloc_temp(lhs.size);
@@ -285,20 +289,48 @@ void Lifter::lift_insn(const Insn& insn, const AnalysisDB& db, PcodeBlock& out) 
         operand_write(insn, 0, result, out);
         break;
     }
-    case InsnType::Mul: {
-        auto rax_v = vn_reg(REG_RAX, "rax", 8);
-        Varnode src = operand_read(insn, insn.op_count > 1 ? 1 : 0, db, out);
-        Varnode result = alloc_temp();
-        emit(out, PcodeOp::INT_MULT, result, {rax_v, src});
-        emit(out, PcodeOp::COPY, rax_v, {result});
+    case InsnType::Inc: case InsnType::Dec: {
+        Varnode val = operand_read(insn, 0, db, out);
+        Varnode result = alloc_temp(val.size);
+        emit(out, insn.type == InsnType::Inc ? PcodeOp::ADD : PcodeOp::SUB,
+             result, {val, vn_const(1, val.size)});
+        operand_write(insn, 0, result, out);
         break;
     }
-    case InsnType::Div: {
+    case InsnType::Mul: case InsnType::Imul: {
+        Varnode result = alloc_temp();
+        if (insn.op_count == 1) {
+            auto rax_v = vn_reg(REG_RAX, "rax", 8);
+            Varnode src = operand_read(insn, 0, db, out);
+            emit(out, PcodeOp::INT_MULT, result, {rax_v, src});
+            emit(out, PcodeOp::COPY, rax_v, {result});
+        } else if (insn.op_count == 2) {
+            Varnode lhs = operand_read(insn, 0, db, out);
+            Varnode rhs = operand_read(insn, 1, db, out);
+            emit(out, PcodeOp::INT_MULT, result, {lhs, rhs});
+            operand_write(insn, 0, result, out);
+        } else if (insn.op_count == 3) {
+            Varnode lhs = operand_read(insn, 1, db, out);
+            Varnode rhs = operand_read(insn, 2, db, out);
+            emit(out, PcodeOp::INT_MULT, result, {lhs, rhs});
+            operand_write(insn, 0, result, out);
+        }
+        break;
+    }
+    case InsnType::Div: case InsnType::Idiv: {
         auto rax_v = vn_reg(REG_RAX, "rax", 8);
-        Varnode src = operand_read(insn, insn.op_count > 1 ? 1 : 0, db, out);
+        Varnode src = operand_read(insn, 0, db, out);
         Varnode result = alloc_temp();
         emit(out, PcodeOp::INT_DIV, result, {rax_v, src});
         emit(out, PcodeOp::COPY, rax_v, {result});
+        break;
+    }
+    case InsnType::Movsx: case InsnType::Movzx: {
+        Varnode src = operand_read(insn, 1, db, out);
+        Varnode result = alloc_temp(insn.ops[0].size / 8);
+        emit(out, insn.type == InsnType::Movsx ? PcodeOp::INT_SEXT : PcodeOp::INT_ZEXT,
+             result, {src});
+        operand_write(insn, 0, result, out);
         break;
     }
     case InsnType::Not: {
@@ -325,16 +357,24 @@ void Lifter::lift_insn(const Insn& insn, const AnalysisDB& db, PcodeBlock& out) 
         emit(out, PcodeOp::COPY, rsp, {new_sp});
         break;
     }
-    case InsnType::Cmp: {
+    case InsnType::Cmp: case InsnType::Test: {
         Varnode lhs = operand_read(insn, 0, db, out);
         Varnode rhs = operand_read(insn, 1, db, out);
-        emit_flags(insn, lhs, rhs, out, false);
+        emit_flags(insn, lhs, rhs, out, insn.type == InsnType::Test);
         break;
     }
-    case InsnType::Test: {
-        Varnode lhs = operand_read(insn, 0, db, out);
-        Varnode rhs = operand_read(insn, 1, db, out);
-        emit_flags(insn, lhs, rhs, out, true);
+    case InsnType::Setcc: {
+        int flag_reg; bool negate;
+        jcc_to_flag_op(insn.mnemonic_id, flag_reg, negate);
+        Varnode flag = vn_reg(flag_reg, "flag", 1);
+        Varnode result = flag;
+        if (negate) {
+            result = alloc_temp(1);
+            emit(out, PcodeOp::BOOL_NOT, result, {flag});
+        }
+        Varnode final = alloc_temp(1);
+        emit(out, PcodeOp::INT_ZEXT, final, {result});
+        operand_write(insn, 0, final, out);
         break;
     }
     case InsnType::Jcc: {

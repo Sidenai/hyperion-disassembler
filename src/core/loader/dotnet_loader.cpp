@@ -146,8 +146,8 @@ bool DotNetLoader::parse_tables() {
     // TypeDef = table 2, MethodDef = table 6
     // simplified: just extract names from strings heap
     // parse TypeDef rows
-    u32 num_types = tables_[2].rows;
-    u32 num_methods = tables_[6].rows;
+    // u32 num_types = tables_[2].rows;
+    // u32 num_methods = tables_[6].rows;
 
     // We can't easily compute row sizes without knowing all coded index sizes
     // Simplified: scan the strings heap for type/method names
@@ -319,7 +319,7 @@ std::string DotNetLoader::resolve_token(u32 token) {
     }
 }
 
-void DotNetLoader::populate_db(AnalysisDB& db, const PEImage& img) {
+void DotNetLoader::populate_db(AnalysisDB& db, const PEImage& /*img*/) {
     for (auto& m : dn_.methods) {
         Function f;
         f.entry = m.rva;

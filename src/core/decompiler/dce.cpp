@@ -48,49 +48,30 @@ void DCE::run(PcodeFunc& func) {
     static constexpr int RSP_ID = 4;
     static constexpr int RBP_ID = 5;
 
-    // Pass 1: eliminate ALL rsp/rbp arithmetic (prologue/epilogue)
-    // Keep only: CALL, RETURN, CBRANCH, BRANCH, and ops that produce non-stack results
+    // Pass 1: eliminate ONLY redundant prologue/epilogue register saves/restores
+    // and flag computations not used by branches.
     for (auto& blk : func.blocks) {
         for (auto& op : blk.ops) {
             if (op.op == PcodeOp::NOP || op.op == PcodeOp::CALL ||
                 op.op == PcodeOp::RETURN || op.op == PcodeOp::CBRANCH ||
                 op.op == PcodeOp::BRANCH) continue;
 
-            // kill RSP/RBP modifications (sub rsp, add rsp, mov rbp rsp, etc.)
-            if (op.output.valid() && (op.output.id == RSP_ID || op.output.id == RBP_ID) && op.output.is_reg()) {
-                op.op = PcodeOp::NOP;
-                continue;
-            }
-
-            // kill stores to stack (push operations, spills)
-            if (op.op == PcodeOp::STORE) {
-                bool stack_store = false;
-                if (!op.inputs.empty()) {
-                    auto& addr = op.inputs[0];
-                    if (addr.is_reg() && (addr.id == RSP_ID || addr.id == RBP_ID))
-                        stack_store = true;
-                    if (addr.kind == VarnodeKind::Stack)
-                        stack_store = true;
-                    // temp that was derived from rsp
-                    if (addr.is_temp())
-                        stack_store = true;
-                }
-                if (stack_store) { op.op = PcodeOp::NOP; continue; }
-            }
-
-            // kill loads from stack that restore callee-saved regs
-            if (op.op == PcodeOp::LOAD && op.output.valid() && op.output.is_reg()) {
-                if (is_callee_saved(op.output.id)) {
-                    op.op = PcodeOp::NOP;
-                    continue;
-                }
-            }
-
             // kill flag computations not used by branches
             if (op.output.valid() && is_flag_reg(op.output.id)) {
                 if (!is_used(op.output, func, -1, -1)) {
                     op.op = PcodeOp::NOP;
                     continue;
+                }
+            }
+
+            // kill loads from stack that restore callee-saved regs (typical epilogue)
+            if (op.op == PcodeOp::LOAD && op.output.valid() && op.output.is_reg()) {
+                if (is_callee_saved(op.output.id)) {
+                    // Check if this reg is used after this LOAD. If not, it's just an epilogue restore.
+                    if (!is_used(op.output, func, -1, -1)) {
+                        op.op = PcodeOp::NOP;
+                        continue;
+                    }
                 }
             }
         }

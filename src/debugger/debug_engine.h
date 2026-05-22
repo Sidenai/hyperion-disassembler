@@ -9,6 +9,14 @@
 #include <atomic>
 #include <functional>
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+using HANDLE = void*;
+struct DEBUG_EVENT { int dummy; };
+struct LARGE_INTEGER { long long QuadPart; };
+#endif
+
 namespace hype {
 
 enum class DebugMode { Normal, Stealth };

@@ -150,6 +150,13 @@ std::string Emitter::expr_str(const CExpr& e) {
         return fmt::format("~{}", expr_str(e.args[0]));
     }
 
+    if (e.op == PcodeOp::INT_ZEXT && !e.args.empty()) {
+        return fmt::format("(uint{}_t){}", e.vn.size * 8, expr_str(e.args[0]));
+    }
+    if (e.op == PcodeOp::INT_SEXT && !e.args.empty()) {
+        return fmt::format("(int{}_t){}", e.vn.size * 8, expr_str(e.args[0]));
+    }
+
     if (e.args.size() == 2) {
         std::string l = expr_str(e.args[0]);
         std::string r = expr_str(e.args[1]);

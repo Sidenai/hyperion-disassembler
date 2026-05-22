@@ -6,10 +6,11 @@ namespace hype {
 
 std::vector<PseudoLine> Decompiler::decompile(const Function& func, const AnalysisDB& db,
                                                const RTTIParser* rtti) {
+    (void)rtti;
     if (func.blocks.empty())
         return {{0, "// empty function", func.entry}};
 
-    if (func.blocks.size() > 200) {
+    if (func.blocks.size() > 5000) {
         std::vector<PseudoLine> out;
         out.push_back({0, fmt::format("// function too complex ({} blocks)", func.blocks.size()), func.entry});
         out.push_back({0, fmt::format("void {}() {{", func.name), func.entry});
@@ -45,8 +46,16 @@ std::vector<PseudoLine> Decompiler::decompile(const Function& func, const Analys
     else if (db.arch == Arch::X64 || db.arch == Arch::X86)
         pf = lifter_.lift(func, db);
     else {
-        // Fallback for other architectures or unsupported ones
-        return {{0, fmt::format("// architecture not supported in decompiler yet"), func.entry}};
+        std::vector<PseudoLine> out;
+        out.push_back({0, fmt::format("// architecture not supported in decompiler yet"), func.entry});
+        out.push_back({0, fmt::format("void {}() {{", func.name), func.entry});
+        for (auto& [ba, bb] : func.blocks) {
+            for (auto& insn : bb.insns) {
+                out.push_back({1, fmt::format("__asm {{ {} {} }}", insn.mnemonic, insn.op_str), insn.addr});
+            }
+        }
+        out.push_back({0, "}", 0});
+        return out;
     }
     ssa_.build(pf);
     dce_.run(pf);
