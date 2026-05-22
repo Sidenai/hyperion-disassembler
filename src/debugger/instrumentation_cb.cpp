@@ -1,12 +1,17 @@
 #include "instrumentation_cb.h"
 #include <spdlog/spdlog.h>
 #include <fmt/format.h>
+
+#ifdef _WIN32
 #include <winternl.h>
 #include <cstring>
 
 #pragma comment(lib, "ntdll.lib")
+#endif
 
 namespace hype {
+
+#ifdef _WIN32
 
 namespace {
 
@@ -238,5 +243,19 @@ bool InstrumentationBreakpoints::update_bp_list() {
     }
     return true;
 }
+
+#else
+
+InstrumentationBreakpoints::~InstrumentationBreakpoints() {}
+bool InstrumentationBreakpoints::install(HANDLE process, u32 pid) { return false; }
+void InstrumentationBreakpoints::uninstall() {}
+bool InstrumentationBreakpoints::add_breakpoint(va_t addr) { return false; }
+bool InstrumentationBreakpoints::remove_breakpoint(va_t addr) { return false; }
+va_t InstrumentationBreakpoints::poll_hit() { return 0; }
+bool InstrumentationBreakpoints::alloc_and_write_shellcode() { return false; }
+bool InstrumentationBreakpoints::set_peb_callback() { return false; }
+bool InstrumentationBreakpoints::update_bp_list() { return false; }
+
+#endif
 
 }

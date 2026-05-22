@@ -1,12 +1,16 @@
 #include "debug_engine.h"
 #include <spdlog/spdlog.h>
 #include <fmt/format.h>
+
+#ifdef _WIN32
 #include <psapi.h>
 #include <tlhelp32.h>
-
 #pragma comment(lib, "psapi.lib")
+#endif
 
 namespace hype {
+
+#ifdef _WIN32
 
 DebugEngine::~DebugEngine() {
     if (attached_) detach();
@@ -666,5 +670,37 @@ void DebugEngine::log(const std::string& msg) {
     spdlog::info("[Dbg] {}", msg);
     if (log_cb_) log_cb_(msg);
 }
+
+#else
+
+DebugEngine::~DebugEngine() {}
+bool DebugEngine::attach(u32 pid, DebugMode mode) { return false; }
+bool DebugEngine::detach() { return false; }
+void DebugEngine::run() {}
+void DebugEngine::pause() {}
+void DebugEngine::step_into() {}
+void DebugEngine::step_over() {}
+void DebugEngine::step_out() {}
+bool DebugEngine::set_breakpoint(va_t addr) { return false; }
+bool DebugEngine::remove_breakpoint(va_t addr) { return false; }
+bool DebugEngine::set_hw_breakpoint(va_t addr, int slot) { return false; }
+bool DebugEngine::remove_hw_breakpoint(int slot) { return false; }
+bool DebugEngine::read_memory(va_t addr, void* buf, size_t len) { return false; }
+bool DebugEngine::write_memory(va_t addr, const void* buf, size_t len) { return false; }
+DebugEngine::Registers DebugEngine::get_registers(u32 tid) { return {}; }
+bool DebugEngine::set_registers(const Registers& regs, u32 tid) { return false; }
+DebugEngine::DebugEvent DebugEngine::poll_event() { return {}; }
+void DebugEngine::debug_loop() {}
+void DebugEngine::update_modules() {}
+void DebugEngine::update_threads() {}
+void DebugEngine::restore_breakpoints_for_step(va_t addr) {}
+void DebugEngine::emit(DebugEvent ev) {}
+void DebugEngine::log(const std::string& msg) {}
+void DebugEngine::handle_breakpoint_hit(va_t addr, u32 tid) {}
+void DebugEngine::handle_single_step(u32 tid) {}
+void DebugEngine::handle_exception(const DEBUG_EVENT& ev) {}
+HANDLE DebugEngine::thread_handle(u32 tid) { return nullptr; }
+
+#endif
 
 }

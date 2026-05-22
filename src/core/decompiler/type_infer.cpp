@@ -68,6 +68,10 @@ void TypeInfer::init_known_funcs() {
         {"calloc",    void_ptr,{sizet, sizet}, {"count", "size"}},
         {"realloc",   void_ptr,{void_ptr, sizet}, {"ptr", "size"}},
         {"free",      DecompType::make_void(), {void_ptr}, {"ptr"}},
+        {"_stricmp",  int32,   {const_char_ptr, const_char_ptr}, {"s1", "s2"}},
+        {"_strnicmp", int32,   {const_char_ptr, const_char_ptr, sizet}, {"s1", "s2", "n"}},
+        {"strstr",    char_ptr,{const_char_ptr, const_char_ptr}, {"haystack", "needle"}},
+        {"strchr",    char_ptr,{const_char_ptr, int32}, {"str", "c"}},
         {"printf",    int32,   {const_char_ptr}, {"fmt"}},
         {"sprintf",   int32,   {char_ptr, const_char_ptr}, {"buf", "fmt"}},
         {"puts",      int32,   {const_char_ptr}, {"str"}},
@@ -198,6 +202,10 @@ void TypeInfer::name_variables(const PcodeFunc& func) {
                 names_[op.output.id] = "argv";
             else if (fn_vn.name == "__p___argc")
                 names_[op.output.id] = "argc";
+            else if (fn_vn.name == "strstr" || fn_vn.name == "strchr")
+                names_[op.output.id] = "found";
+            else if (fn_vn.name == "strcmp" || fn_vn.name == "strncmp" || fn_vn.name == "_stricmp" || fn_vn.name == "_strnicmp")
+                names_[op.output.id] = "cmp";
         }
     }
 }

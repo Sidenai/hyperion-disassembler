@@ -5,7 +5,7 @@
 
 namespace hype {
 
-bool IDAExport::write(const std::filesystem::path& path, const PEImage& img, const AnalysisDB& db) {
+bool IDAExport::write(const std::filesystem::path& path, const PEImage& /*img*/, const AnalysisDB& db) {
     std::ofstream f(path);
     if (!f) { spdlog::error("cannot write: {}", path.string()); return false; }
 
