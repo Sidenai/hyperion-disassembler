@@ -62,7 +62,7 @@ App::App() : pool_(std::thread::hardware_concurrency()) {
 App::~App() = default;
 
 int App::run() {
-    if (!renderer_.init(1600, 900, "Hyperion v" HYPERION_VERSION))
+    if (!renderer_.init(1600, 900, "Hyperion version" HYPERION_VERSION))
         return 1;
 
     renderer_.set_drop_callback([this](const char* p) { open_file(p); });
@@ -76,9 +76,8 @@ int App::run() {
     }
     apply_theme();
     out_.log("Hyperion v" HYPERION_VERSION " ready");
-    out_.log("Drop a PE file or use File > Open (Ctrl+O)");
+    out_.log("Drop a Binary file or use File > Open (Ctrl+O)");
 
-    // Load plugins from plugins/ dir next to the executable (main thread, pre-loop)
     {
         auto plugin_dir = std::filesystem::path("plugins");
         lua_.load_plugins(plugin_dir);
@@ -115,7 +114,7 @@ int App::run() {
             sfv_.set_data(&db);
             navigate_to(img_->entry);
             sync_panels(img_->entry);
-            out_.log(fmt::format("Done: {} insns, {} funcs, {} xrefs, {} strings",
+            out_.log(fmt::format("Done: {} insns, {} funcs, {} xrefs, {} strings.",
                 db.insns.size(), db.funcs.size(), db.xrefs.size(), db.strings.size()));
             if (!analyzer_->rtti_parser().classes().empty())
                 out_.log(fmt::format("RTTI: found {} classes", analyzer_->rtti_parser().classes().size()));
